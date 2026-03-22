@@ -1,0 +1,14 @@
+venv/
+__pycache__/
+*.pyc
+
+# Environment variables
+.env
+
+# Database files
+trades.db
+*.sqlite3
+
+# Logs
+logs/
+*.log
