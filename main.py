@@ -2,6 +2,7 @@ import os
 import logging
 import threading
 from flask import Flask
+from dotenv import load_dotenv
 from telegram.ext import ApplicationBuilder, CommandHandler
 from bot.handlers import (start_command, trade_command, list_command, cancel_command,
                           history_command, stats_command, pnl_command,
@@ -24,6 +25,9 @@ def run_flask():
     web_app.run(host="0.0.0.0", port=port, use_reloader=False)
 
 def main():
+    # Load environment variables from .env if present
+    load_dotenv()
+    
     # Initialize the SQLite database
     init_db()
 
