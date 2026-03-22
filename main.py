@@ -1,5 +1,7 @@
 import os
 import logging
+import threading
+from flask import Flask
 from telegram.ext import ApplicationBuilder, CommandHandler
 from bot.handlers import (start_command, trade_command, list_command, cancel_command,
                           history_command, stats_command, pnl_command,
@@ -7,6 +9,19 @@ from bot.handlers import (start_command, trade_command, list_command, cancel_com
 from database.operations import init_db
 from engine.price_checker import check_trades
 from utils.logger import log_system
+
+# Initialize Flask server for Web Service Health Checks
+web_app = Flask(__name__)
+
+@web_app.route('/health')
+def health():
+    return "OK", 200
+
+def run_flask():
+    port = int(os.environ.get("PORT", 8080))
+    log_system(f"Starting Flask health server on port {port}...")
+    # use_reloader=False is critical when running inside a thread
+    web_app.run(host="0.0.0.0", port=port, use_reloader=False)
 
 def main():
     # Initialize the SQLite database
@@ -43,6 +58,11 @@ def main():
         job_queue.run_repeating(check_trades, interval=60, first=10)
     else:
         log_system("JobQueue not initialized. Make sure APScheduler is installed.", level=logging.ERROR)
+
+    # Start Flask in a background daemon thread so it doesn't block the Bot
+    flask_thread = threading.Thread(target=run_flask)
+    flask_thread.daemon = True
+    flask_thread.start()
 
     # Start the Bot
     log_system("Bot is starting via long polling...")
