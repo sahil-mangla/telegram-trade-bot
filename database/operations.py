@@ -68,11 +68,6 @@ def add_trade(user_id, symbol, entry_price, stop_loss, target_price, quantity):
         session.commit()
         return trade.id
 
-def get_trades_by_status(status_list):
-    with next(get_session()) as session:
-        trades = session.query(Trade).filter(Trade.status.in_(status_list)).all()
-        return [to_dict(t) for t in trades]
-
 def get_user_trades(user_id):
     with next(get_session()) as session:
         trades = session.query(Trade).filter(Trade.user_id == user_id).order_by(Trade.id.desc()).all()
@@ -117,6 +112,8 @@ def get_trades_by_status(status_list: list):
     with next(get_session()) as session:
         trades = session.query(Trade).filter(Trade.status.in_(status_list)).all()
         return [to_dict(t) for t in trades]
+
+def get_user_trade_history(user_id, limit=10):
     with next(get_session()) as session:
         trades = session.query(Trade).filter(
             Trade.user_id == user_id, 
