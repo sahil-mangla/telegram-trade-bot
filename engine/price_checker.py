@@ -1,18 +1,19 @@
+import os
+import json
+import logging
+from datetime import datetime, time
+from telegram.ext import ContextTypes
 from database.operations import get_trades_by_status, update_trade_execution, update_trade_fields
 from services.market_data import get_multiple_prices
 from engine.trailing_stop_manager import TrailingStopManager
 from services.zerodha_service import ZerodhaService
-from telegram.ext import ContextTypes
-import logging
-import os
-import json
-from datetime import datetime, time
 from utils.logger import log_trade_event, log_system
 
 async def check_trades(context: ContextTypes.DEFAULT_TYPE):
     # Initialize Zerodha Service for execution
     zerodha = ZerodhaService()
     has_zerodha = zerodha.load_session()
+    
     # 1. Check for Same-Day Closure (EOD)
     market_close_str = os.environ.get("MARKET_CLOSE_TIME", "15:30")
     try:
@@ -54,48 +55,70 @@ async def check_trades(context: ContextTypes.DEFAULT_TYPE):
             
         current_price = prices[symbol]
         status = trade['status']
-        user_id = trade['user_id']
         trade_id = trade['id']
+        qty = trade['quantity']
         
         entry = trade['entry_price']
         sl = trade['stop_loss']
         target = trade['target_price']
-        qty = trade['quantity']
-        is_long = target > entry if target else True # Default to long if no target
+        is_long = target > entry if target else True 
 
-        if is_eod and status == 'ACTIVE':
-            # Force close at EOD
-            buy_price = trade.get('buy_price') or entry
-            multiplier = 1 if is_long else -1
-            pnl = (current_price - buy_price) * qty * multiplier
+        # --- CASE: PENDING ---
+        if status == 'PENDING':
+            # Check for Entry
+            entry_hit = (is_long and current_price >= entry) or (not is_long and current_price <= entry)
+            if entry_hit:
+                log_system(f"Entry Hit: {symbol} at {current_price}")
+                
+                # Zerodha Entry
+                if has_zerodha:
+                    tx_type = "BUY" if is_long else "SELL"
+                    zerodha.place_order(symbol, tx_type, qty)
+
+                update_trade_execution(trade_id, 'ACTIVE', current_price=current_price)
+                log_trade_event(trade_id, "PENDING", "ACTIVE", f"Entry triggered at {current_price}")
+
+        # --- CASE: ACTIVE ---
+        elif status == 'ACTIVE':
+            # 1. EOD Check
+            if is_eod:
+                buy_price = trade.get('buy_price') or entry
+                multiplier = 1 if is_long else -1
+                pnl = (current_price - buy_price) * qty * multiplier
+                
+                if has_zerodha:
+                    tx_type = "SELL" if is_long else "BUY"
+                    zerodha.place_order(symbol, tx_type, qty)
+
+                update_trade_execution(trade_id, 'CLOSED_TARGET', current_price=current_price, pnl=pnl)
+                update_trade_fields(trade_id, {'exit_reason': 'EOD_CLOSE'})
+                continue
+
+            # 2. Risk Check (SL/Target)
+            sl_hit = (is_long and current_price <= sl) or (not is_long and current_price >= sl)
+            target_hit = target and ((is_long and current_price >= target) or (not is_long and current_price <= target))
             
-            # Zerodha Exit
-            if has_zerodha:
-                tx_type = "SELL" if is_long else "BUY"
-                zerodha.place_order(symbol, tx_type, qty)
+            if sl_hit or target_hit:
+                new_status = 'CLOSED_TARGET' if target_hit else 'CLOSED_SL'
+                buy_price = trade.get('buy_price') or entry
+                multiplier = 1 if is_long else -1
+                pnl = (current_price - buy_price) * qty * multiplier
+                
+                if has_zerodha:
+                    tx_type = "SELL" if is_long else "BUY"
+                    zerodha.place_order(symbol, tx_type, qty)
+                
+                update_trade_execution(trade_id, new_status, current_price=current_price, pnl=pnl)
+                update_trade_fields(trade_id, {'exit_reason': 'TARGET' if target_hit else 'STOP_LOSS'})
+                continue
 
-            update_trade_execution(trade_id, 'CLOSED_TARGET', current_price=current_price, pnl=pnl)
-            # ... (rest of the block)
-@@ -67,6 +75,10 @@
-                 risk_per_share = abs(entry - sl)
-                 initial_risk = risk_per_share * qty
-                 
-+                # Zerodha Entry
-+                if has_zerodha:
-+                    tx_type = "BUY" if is_long else "SELL"
-+                    zerodha.place_order(symbol, tx_type, qty)
-+
-                 update_trade_execution(trade_id, 'ACTIVE', current_price=current_price)
-                 # ... (rest of the block)
-@@ -134,6 +146,11 @@
-                 new_status = 'CLOSED_TARGET' if target_hit else 'CLOSED_SL'
-                 multiplier = 1 if is_long else -1
-                 pnl = (current_price - buy_price) * qty * multiplier
-+                
-+                # Zerodha Exit
-+                if has_zerodha:
-+                    tx_type = "SELL" if is_long else "BUY"
-+                    zerodha.place_order(symbol, tx_type, qty)
-                 
-                 update_trade_execution(trade_id, new_status, current_price=current_price, pnl=pnl)
-                 # ... (rest of the block)
+            # 3. Trailing Stop Update (3R Logic)
+            ts_manager = TrailingStopManager(trade)
+            updated, new_sl, event_msg = ts_manager.check_and_update(current_price)
+            if updated:
+                update_trade_fields(trade_id, {
+                    'stop_loss': new_sl,
+                    'highest_price_reached': max(trade.get('highest_price_reached') or 0, current_price),
+                    'trailing_stop_events': json.dumps(ts_manager.events)
+                })
+                log_system(f"Trailing SL Update ({symbol}): {event_msg}")

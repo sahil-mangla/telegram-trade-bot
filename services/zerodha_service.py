@@ -1,6 +1,7 @@
 import os
 from kiteconnect import KiteConnect
-from database.operations import get_session, SystemConfig
+from database.db import get_session
+from database.models import SystemConfig
 from utils.logger import log_system
 import datetime
 
