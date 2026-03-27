@@ -34,9 +34,9 @@ def main():
     # Initialize DB
     init_db()
     
-    token = os.environ.get("TELEGRAM_TOKEN")
+    token = os.environ.get("TELEGRAM_TOKEN") or os.environ.get("TELEGRAM_BOT_TOKEN")
     if not token:
-        log_system("TELEGRAM_TOKEN not found in environment variables", level=logging.ERROR)
+        log_system("TELEGRAM_TOKEN or TELEGRAM_BOT_TOKEN not found in environment variables", level=logging.ERROR)
         return
 
     # Build Telegram Bot
