@@ -102,7 +102,21 @@ def update_trade_execution(trade_id, status, current_price=None, pnl=None):
         session.add(log)
         session.commit()
 
-def get_user_trade_history(user_id, limit=10):
+def update_trade_fields(trade_id: int, fields: dict):
+    with next(get_session()) as session:
+        trade = session.query(Trade).filter(Trade.id == trade_id).first()
+        if not trade: return
+        
+        for key, value in fields.items():
+            if hasattr(trade, key):
+                setattr(trade, key, value)
+        
+        session.commit()
+
+def get_trades_by_status(status_list: list):
+    with next(get_session()) as session:
+        trades = session.query(Trade).filter(Trade.status.in_(status_list)).all()
+        return [to_dict(t) for t in trades]
     with next(get_session()) as session:
         trades = session.query(Trade).filter(
             Trade.user_id == user_id, 

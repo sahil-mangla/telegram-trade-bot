@@ -1,25 +1,131 @@
 from telegram import Update
 from telegram.ext import ContextTypes
+import os
+import csv
+import io
 from database.operations import (add_trade, get_user_trades, 
                                  update_trade_execution, get_trade_by_id,
                                  get_user_trade_history, get_user_trade_stats,
-                                 get_user_settings, update_user_settings, get_daily_metrics)
-from utils.logger import log_trade_event
+                                 get_user_settings, update_user_settings, get_daily_metrics,
+                                 update_trade_fields)
+from sizers.fixed_percentage_sizer import FixedPercentageSizer
+from engine.daily_limit_manager import DailyLimitManager
+from utils.logger import log_trade_event, log_system
+from services.zerodha_service import ZerodhaService
+
+async def handle_document(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    user_id = update.message.chat_id
+    file = await update.message.document.get_file()
+    
+    if not update.message.document.file_name.endswith('.csv'):
+        await update.message.reply_text("❌ Please upload a CSV file.")
+        return
+
+    # Download file content
+    byte_array = await file.download_as_bytearray()
+    content = byte_array.decode('utf-8')
+    f = io.StringIO(content)
+    reader = csv.DictReader(f)
+
+    # Validate headers (Case-insensitive)
+    if not reader.fieldnames:
+        await update.message.reply_text("❌ CSV file appears to be empty.")
+        return
+        
+    headers = [h.strip().lower() for h in reader.fieldnames]
+    required = ['symbol', 'entry', 'sl']
+    if not all(r in headers for r in required):
+        await update.message.reply_text(f"❌ Invalid CSV format. Required headers: {', '.join(required)}")
+        return
+
+    # Map headers to canonical names
+    header_map = {h: h.strip().lower() for h in reader.fieldnames}
+    
+    added_count = 0
+    errors = 0
+    
+    # Check daily limits
+    can_trade, reason = DailyLimitManager.can_create_trade()
+    if not can_trade:
+        await update.message.reply_text(f"🛑 Cannot process CSV: {reason}")
+        return
+
+    settings = get_user_settings(user_id)
+    sizer = FixedPercentageSizer(allocation_pct=0.10)
+    
+    existing_trades = get_user_trades(user_id)
+    pending_symbols = [t['symbol'] for t in existing_trades if t['status'] in ['PENDING', 'ACTIVE']]
+
+    for row in reader:
+        try:
+            symbol = row.get(next(k for k, v in header_map.items() if v == 'symbol')).upper()
+            entry = float(row.get(next(k for k, v in header_map.items() if v == 'entry')))
+            sl = float(row.get(next(k for k, v in header_map.items() if v == 'sl')))
+            
+            if symbol in pending_symbols:
+                continue
+                
+            qty = sizer.calculate_quantity(symbol, entry, sl, settings['account_size'])
+            if qty < 1:
+                continue
+                
+            trade_id = add_trade(user_id, symbol, entry, sl, None, qty)
+            update_trade_fields(trade_id, {
+                'signal_source': 'csv_upload',
+                'allocation_percentage': 10.0
+            })
+            added_count += 1
+        except Exception as e:
+            errors += 1
+            log_system(f"CSV Parse error: {e}", level=30)
+
+    await update.message.reply_text(
+        f"✅ CSV parsing complete!\n"
+        f"📈 Added: {added_count} trades\n"
+        f"❌ Errors: {errors}"
+    )
 
 async def start_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    user_id = update.message.chat_id
     text = (
-        "Welcome to the Trade Bot! 📈\n\n"
-        "Commands:\n"
-        "/trade <symbol> <entry> <stop_loss> [quantity] - Create a new trade\n"
-        "/account [size] - View or set account size\n"
-        "/risk [pct] - View or set risk per trade percentage\n"
-        "/list - View your pending and active trades\n"
-        "/history - View your last 10 closed trades\n"
-        "/stats - View your performance stats\n"
-        "/pnl - View your total PnL\n"
-        "/cancel <trade_id> - Cancel a pending trade"
+        "Welcome to the Autonomous Trade Bot! 📈\n\n"
+        "Manual Commands:\n"
+        "/trade <symbol> <entry> <stop_loss> [quantity]\n"
+        "/account [size] | /risk [pct]\n"
+        "/list | /history | /stats | /pnl\n"
+        "/cancel <trade_id>\n\n"
+        "Autonomous Commands:\n"
+        "/status - Daily summary & halt status\n"
+        "/activetrades - View active trades with R-multiple\n"
+        "/forcesync - Refresh local state\n"
+        "/resetdaily - Reset daily SL counter\n\n"
+        "Zerodha Commands:\n"
+        "/login - Get Zerodha login URL\n"
+        "/settoken <request_token> - Complete login\n\n"
+        "💡 Tip: Drag and drop a CSV file with 'symbol', 'entry', 'sl' headers to bulk-add trades."
     )
     await update.message.reply_text(text)
+
+async def login_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    service = ZerodhaService()
+    url = service.get_login_url()
+    if url:
+        await update.message.reply_text(f"🔗 Login to Zerodha here:\n{url}\n\nAfter logging in, copy the 'request_token' from the URL bar of the page you are redirected to, and use /settoken <token>")
+    else:
+        await update.message.reply_text("❌ Error generating login URL. Check your Zerodha keys in .env.")
+
+async def settoken_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if not context.args:
+        await update.message.reply_text("Usage: /settoken <request_token>")
+        return
+    
+    token = context.args[0]
+    service = ZerodhaService()
+    success, msg = service.set_access_token(token)
+    if success:
+        await update.message.reply_text(f"✅ {msg}")
+    else:
+        await update.message.reply_text(f"❌ Error: {msg}")
 
 async def trade_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     args = context.args
@@ -29,28 +135,26 @@ async def trade_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text("Usage: /trade <symbol> <entry> <stop_loss> [quantity]")
         return
         
+    can_trade, reason = DailyLimitManager.can_create_trade()
+    if not can_trade:
+        await update.message.reply_text(f"🛑 {reason}")
+        return
+
     symbol = args[0].upper()
     try:
         entry = float(args[1])
         sl = float(args[2])
     except ValueError:
-        await update.message.reply_text("Invalid numbers provided. Entry and Stop Loss must be numbers.")
+        await update.message.reply_text("Invalid numbers provided.")
         return
         
-    # Get Risk Settings & Metrics
     settings = get_user_settings(user_id)
     metrics = get_daily_metrics(user_id)
     
-    # 1. Daily Limits Validations
     if metrics['trades_today'] >= settings['max_daily_trades']:
-        await update.message.reply_text(f"🛑 Trade rejected: You have reached your max daily trades limit ({settings['max_daily_trades']}).")
+        await update.message.reply_text(f"🛑 Max daily trades limit reached.")
         return
         
-    if metrics['pnl_today'] <= -settings['max_daily_loss']:
-        await update.message.reply_text(f"🛑 Trade rejected: You have hit your max daily loss limit (${settings['max_daily_loss']}).")
-        return
-        
-    # 2. Position Sizing
     if len(args) > 3:
         try:
             quantity = int(args[3])
@@ -58,155 +162,116 @@ async def trade_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
             await update.message.reply_text("Quantity must be an integer.")
             return
     else:
-        # Auto calculating quantity based on risk parameter
         risk_amount = settings['account_size'] * (settings['risk_pct'] / 100.0)
         risk_per_share = abs(entry - sl)
         if risk_per_share == 0:
-            await update.message.reply_text("Entry and Stop Loss cannot be the same.")
+            await update.message.reply_text("Entry and SL cannot be same.")
             return
-            
         quantity = int(risk_amount // risk_per_share)
         if quantity < 1:
-            await update.message.reply_text(f"Risk per share (${risk_per_share:.2f}) is too high for your allowed risk (${risk_amount:.2f}). Calculated qty is < 1.")
+            await update.message.reply_text("Calculated qty < 1.")
             return
 
-    # Calculate target (1:2 R:R)
     target = entry + 2 * (entry - sl)
-    
     trade_id = add_trade(user_id, symbol, entry, sl, target, quantity)
-    log_trade_event('CREATED', trade_id=trade_id, symbol=symbol, price=entry, status='PENDING', message=f"SL:{sl} TGT:{target} QTY:{quantity}")
+    update_trade_fields(trade_id, {'signal_source': 'manual'})
+    await update.message.reply_text(f"✅ Manual trade {trade_id} created.")
+
+async def status_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    user_id = update.message.chat_id
+    metrics = get_daily_metrics(user_id)
+    sl_hits = DailyLimitManager.get_sl_hits_today()
+    halted = DailyLimitManager.is_trading_halted()
     
-    msg = (f"✅ Trade setup saved (ID: {trade_id})\n\n"
-           f"Symbol: {symbol}\n"
-           f"Entry: {entry}\n"
-           f"Stop Loss: {sl}\n"
-           f"Auto Target: {target}\n"
-           f"Quantity: {quantity}\n\n"
-           f"Status: PENDING")
+    status_icon = "🛑 HALTED" if halted else "✅ ACTIVE"
+    msg = (f"📊 Daily Status ({status_icon})\n\n"
+           f"Trades Taken: {metrics['trades_today']}\n"
+           f"PnL Today: ${metrics['pnl_today']:.2f}\n"
+           f"SL Hits: {sl_hits}/{os.environ.get('MAX_DAILY_SL', 3)}")
     await update.message.reply_text(msg)
+
+async def activetrades_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    trades = [t for t in get_user_trades(update.message.chat_id) if t['status'] == 'ACTIVE']
+    if not trades:
+        await update.message.reply_text("No active trades.")
+        return
+        
+    text = "🚀 Active Trades:\n\n"
+    for t in trades:
+        text += (f"ID: {t['id']} | {t['symbol']} | Qty: {t['quantity']}\n"
+                 f"Entry: {t['entry_price']} | SL: {t['stop_loss']}\n"
+                 f"Source: {t.get('signal_source', 'manual')}\n"
+                 f"----------------------\n")
+    await update.message.reply_text(text)
+
+async def forcesync_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    await update.message.reply_text("ℹ️ Remote sync disabled. Bot is in CSV/Manual mode.")
+
+async def resetdaily_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    DailyLimitManager.set_trading_halt(False)
+    await update.message.reply_text("✅ Daily limits/halt status reset.")
 
 async def list_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     trades = get_user_trades(update.message.chat_id)
     active_or_pending = [t for t in trades if t['status'] in ['PENDING', 'ACTIVE']]
     
     if not active_or_pending:
-        await update.message.reply_text("You have no pending or active trades.")
+        await update.message.reply_text("No pending or active trades.")
         return
         
-    text = "📊 Your Trades:\n\n"
+    text = "📊 All Trades:\n\n"
     for t in active_or_pending:
-        text += (f"ID: {t['id']} | {t['symbol']} | Qty: {t['quantity']}\n"
-                 f"Entry: {t['entry_price']} | SL: {t['stop_loss']} | TGT: {t['target_price']}\n"
-                 f"Status: {t['status']}\n"
+        text += (f"ID: {t['id']} | {t['symbol']} | {t['status']}\n"
+                 f"Entry: {t['entry_price']} | SL: {t['stop_loss']}\n"
                  f"----------------------\n")
-                 
     await update.message.reply_text(text)
 
 async def cancel_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     args = context.args
-    if len(args) != 1:
-        await update.message.reply_text("Usage: /cancel <trade_id>")
-        return
-        
+    if not args: return
     try:
         trade_id = int(args[0])
-    except ValueError:
-        await update.message.reply_text("Trade ID must be a number.")
-        return
-        
-    trade = get_trade_by_id(trade_id)
-    if not trade:
-        await update.message.reply_text("Trade not found.")
-        return
-        
-    if trade['user_id'] != update.message.chat_id:
-        await update.message.reply_text("You do not have permission to cancel this trade.")
-        return
-        
-    if trade['status'] not in ['PENDING', 'ACTIVE']:
-        await update.message.reply_text(f"Cannot cancel a trade that is already {trade['status']}.")
-        return
-        
-    update_trade_execution(trade_id, 'CANCELLED')
-    log_trade_event('CANCELLED', trade_id=trade_id, symbol=trade['symbol'], status='CANCELLED')
-    await update.message.reply_text(f"✅ Trade {trade_id} cancelled.")
+        update_trade_execution(trade_id, 'CANCELLED')
+        await update.message.reply_text(f"✅ Trade {trade_id} cancelled.")
+    except:
+        await update.message.reply_text("Invalid Trade ID.")
 
 async def history_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     trades = get_user_trade_history(update.message.chat_id, limit=10)
     if not trades:
-        await update.message.reply_text("No closed trades found.")
+        await update.message.reply_text("No history.")
         return
-        
-    text = "📜 Trade History (Last 10):\n\n"
+    text = "📜 History:\n\n"
     for t in trades:
-        icon = "🎯" if t['status'] == 'CLOSED_TARGET' else "🔴"
-        pnl_val = t.get('pnl') or 0.0
-        pnl_str = f"+${pnl_val:.2f}" if pnl_val >= 0 else f"-${abs(pnl_val):.2f}"
-        
-        buy_pr = f"{t.get('buy_price'):.2f}" if t.get('buy_price') else "N/A"
-        sell_pr = f"{t.get('sell_price'):.2f}" if t.get('sell_price') else "N/A"
-        
-        text += (f"{icon} {t['symbol']} | Qty: {t['quantity']}\n"
-                 f"Bought: {buy_pr} | Sold: {sell_pr}\n"
-                 f"PnL: {pnl_str}\n"
-                 f"----------------------\n")
+        text += f"{t['symbol']} | PnL: ${t.get('pnl', 0):.2f} | Reason: {t.get('exit_reason', 'N/A')}\n"
     await update.message.reply_text(text)
 
 async def stats_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     stats = get_user_trade_stats(update.message.chat_id)
-    if stats['total_trades'] == 0:
-        await update.message.reply_text("No trading data available.")
-        return
-        
-    text = (f"📈 Performance Stats:\n\n"
-            f"Total Trades: {stats['total_trades']}\n"
-            f"Wins: {stats['wins']} | Losses: {stats['losses']}\n"
-            f"Win Rate: {stats['win_rate']:.1f}%\n"
-            f"Total PnL: ${stats['total_pnl']:.2f}")
+    text = (f"📈 Stats:\n\nTotal: {stats['total_trades']}\nWins: {stats['wins']} | Losses: {stats['losses']}\n"
+            f"WR: {stats['win_rate']:.1f}% | PnL: ${stats['total_pnl']:.2f}")
     await update.message.reply_text(text)
 
 async def pnl_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     stats = get_user_trade_stats(update.message.chat_id)
-    pnl_val = stats.get('total_pnl', 0.0)
-    emoji = "🚀" if pnl_val >= 0 else "📉"
-    await update.message.reply_text(f"{emoji} Total Realized PnL: ${pnl_val:.2f}")
+    await update.message.reply_text(f"💰 Total PnL: ${stats['total_pnl']:.2f}")
 
 async def account_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = update.message.chat_id
     args = context.args
-    settings = get_user_settings(user_id)
-    
-    if not args:
-        await update.message.reply_text(f"🏦 Account Size: ${settings['account_size']:,.2f}")
-        return
-        
-    try:
-        new_size = float(args[0])
-    except ValueError:
-        await update.message.reply_text("Account size must be a number.")
-        return
-        
-    update_user_settings(user_id, 'account_size', new_size)
-    await update.message.reply_text(f"✅ Account size updated to ${new_size:,.2f}")
+    if args:
+        update_user_settings(user_id, 'account_size', float(args[0]))
+        await update.message.reply_text(f"✅ Account: ${float(args[0])}")
+    else:
+        settings = get_user_settings(user_id)
+        await update.message.reply_text(f"🏦 Account: ${settings['account_size']}")
 
 async def risk_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = update.message.chat_id
     args = context.args
-    settings = get_user_settings(user_id)
-    
-    if not args:
-        await update.message.reply_text(f"⚠️ Risk per Trade: {settings['risk_pct']}%")
-        return
-        
-    try:
-        new_risk = float(args[0])
-    except ValueError:
-        await update.message.reply_text("Risk percentage must be a number.")
-        return
-        
-    if new_risk <= 0 or new_risk > 100:
-        await update.message.reply_text("Risk percentage must be between 0 and 100.")
-        return
-        
-    update_user_settings(user_id, 'risk_pct', new_risk)
-    await update.message.reply_text(f"✅ Risk per trade updated to {new_risk}%")
+    if args:
+        update_user_settings(user_id, 'risk_pct', float(args[0]))
+        await update.message.reply_text(f"⚠️ Risk: {float(args[0])}%")
+    else:
+        settings = get_user_settings(user_id)
+        await update.message.reply_text(f"⚠️ Risk: {settings['risk_pct']}%")
