@@ -4,9 +4,10 @@ import logging
 from datetime import datetime, time
 from telegram.ext import ContextTypes
 from database.operations import get_trades_by_status, update_trade_execution, update_trade_fields
-from services.market_data import get_multiple_prices
+from services.market_data import get_multiple_prices, LIVE_TICK_DATA
 from engine.trailing_stop_manager import TrailingStopManager
 from services.zerodha_service import ZerodhaService
+from services.zerodha_ticker import ZerodhaTicker
 from utils.logger import log_trade_event, log_system
 
 async def check_trades(context: ContextTypes.DEFAULT_TYPE):
@@ -44,8 +45,17 @@ async def check_trades(context: ContextTypes.DEFAULT_TYPE):
     symbols = list(set([t['symbol'] for t in all_trades]))
     log_system(f"Running price check for symbols: {symbols}")
     
-    # Fetch current prices
+    # Auto-subscribe symbols to WebSocket Ticker
+    ticker = ZerodhaTicker()
+    ticker.subscribe_symbols(symbols)
+    
+    # Fetch current prices (yfinance fallback)
     prices = get_multiple_prices(symbols)
+    
+    # Merge with Live Tick Data (Real-time data takes precedence)
+    for s in symbols:
+        if s in LIVE_TICK_DATA:
+            prices[s] = LIVE_TICK_DATA[s]
             
     # Process trades
     for trade in all_trades:

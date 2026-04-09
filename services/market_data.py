@@ -1,5 +1,9 @@
 import yfinance as yf
 
+# Global storage for live ticks from WebSocket
+# Format: { 'SYMBOL': float_price }
+LIVE_TICK_DATA = {}
+
 def _extract_price(ticker) -> float:
     """Robustly extract current price from a yfinance Ticker object.
     
@@ -36,9 +40,12 @@ def _extract_price(ticker) -> float:
 def get_current_price(symbol: str) -> float:
     """Fetches the current price for an NSE-listed symbol.
     
-    Symbols should be stored without suffix (e.g. 'ATHERENERG').
-    Automatically appends '.NS' for NSE stocks on yfinance.
+    Prioritizes LIVE_TICK_DATA (WebSocket), then falls back to yfinance.
     """
+    # Check live cache first
+    if symbol in LIVE_TICK_DATA:
+        return LIVE_TICK_DATA[symbol]
+
     # Always try .NS suffix first (NSE-listed Indian stocks)
     nse_symbol = symbol if symbol.endswith('.NS') else f"{symbol}.NS"
     

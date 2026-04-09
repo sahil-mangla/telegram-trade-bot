@@ -11,6 +11,7 @@ from bot.handlers import (start_command, trade_command, list_command, cancel_com
                           login_command, settoken_command, handle_document)
 from database.operations import init_db
 from engine.price_checker import check_trades
+from services.zerodha_ticker import ZerodhaTicker
 from utils.logger import log_system
 
 load_dotenv()
@@ -73,7 +74,15 @@ def main():
     # Set up Background Price Checker Job
     job_queue = application.job_queue
     if job_queue:
-        job_queue.run_repeating(check_trades, interval=60, first=10)
+        # We'll pass a default chat_id for system alerts if needed, 
+        # or it will be derived from active trades.
+        default_chat_id = os.environ.get("TELEGRAM_CHAT_ID")
+        job_queue.run_repeating(check_trades, interval=60, first=10, data={'chat_id': default_chat_id})
+        
+        # Start Zerodha WebSocket Ticker
+        ticker = ZerodhaTicker()
+        ticker.start()
+        log_system("Zerodha Ticker background thread started.")
     else:
         log_system("JobQueue not initialized. Make sure python-telegram-bot[job-queue] is installed.", level=logging.ERROR)
 

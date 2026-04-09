@@ -12,6 +12,7 @@ from sizers.fixed_percentage_sizer import FixedPercentageSizer
 from engine.daily_limit_manager import DailyLimitManager
 from utils.logger import log_trade_event, log_system
 from services.zerodha_service import ZerodhaService
+from services.zerodha_ticker import ZerodhaTicker
 
 async def handle_document(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = update.message.chat_id
@@ -104,6 +105,12 @@ async def handle_document(update: Update, context: ContextTypes.DEFAULT_TYPE):
         except Exception as e:
             errors += 1
             log_system(f"CSV Parse error: {e}", level=30)
+
+    # Auto-subscribe added symbols to WebSocket
+    if added_count > 0:
+        active_trades = get_user_trades(user_id)
+        symbols = [t['symbol'] for t in active_trades if t['status'] in ['PENDING', 'ACTIVE']]
+        ZerodhaTicker().subscribe_symbols(symbols)
 
     msg = f"✅ CSV parsing complete!\n📈 Added: {added_count} trades\n❌ Errors: {errors}"
     if skipped_duplicate > 0:
@@ -203,6 +210,10 @@ async def trade_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     target = entry + 2 * (entry - sl)
     trade_id = add_trade(user_id, symbol, entry, sl, target, quantity)
     update_trade_fields(trade_id, {'signal_source': 'manual'})
+    
+    # Auto-subscribe to WebSocket
+    ZerodhaTicker().subscribe_symbols([symbol])
+    
     await update.message.reply_text(f"✅ Manual trade {trade_id} created.")
 
 async def status_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
