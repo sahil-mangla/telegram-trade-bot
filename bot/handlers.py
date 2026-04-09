@@ -23,7 +23,11 @@ async def handle_document(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     # Download file content
     byte_array = await file.download_as_bytearray()
-    content = byte_array.decode('utf-8')
+    try:
+        content = byte_array.decode('utf-8-sig') # Safely handles BOM from Excel
+    except UnicodeDecodeError:
+        content = byte_array.decode('cp1252', errors='replace')
+        
     f = io.StringIO(content)
     reader = csv.DictReader(f)
 
@@ -32,14 +36,14 @@ async def handle_document(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text("❌ CSV file appears to be empty.")
         return
         
-    headers = [h.strip().lower() for h in reader.fieldnames]
+    headers = [h.strip().lower() for h in reader.fieldnames if h]
     required = ['symbol', 'entry', 'sl']
     if not all(r in headers for r in required):
         await update.message.reply_text(f"❌ Invalid CSV format. Required headers: {', '.join(required)}")
         return
 
     # Map headers to canonical names
-    header_map = {h: h.strip().lower() for h in reader.fieldnames}
+    header_map = {h: h.strip().lower() for h in reader.fieldnames if h}
     
     added_count = 0
     errors = 0
@@ -56,11 +60,23 @@ async def handle_document(update: Update, context: ContextTypes.DEFAULT_TYPE):
     existing_trades = get_user_trades(user_id)
     pending_symbols = [t['symbol'] for t in existing_trades if t['status'] in ['PENDING', 'ACTIVE']]
 
+    try:
+        key_symbol = next(k for k, v in header_map.items() if v == 'symbol')
+        key_entry = next(k for k, v in header_map.items() if v == 'entry')
+        key_sl = next(k for k, v in header_map.items() if v == 'sl')
+    except StopIteration:
+        await update.message.reply_text("❌ Could not map CSV headers correctly.")
+        return
+
     for row in reader:
         try:
-            symbol = row.get(next(k for k, v in header_map.items() if v == 'symbol')).upper()
-            entry = float(row.get(next(k for k, v in header_map.items() if v == 'entry')))
-            sl = float(row.get(next(k for k, v in header_map.items() if v == 'sl')))
+            raw_symbol = row.get(key_symbol)
+            if not raw_symbol or not raw_symbol.strip():
+                continue
+                
+            symbol = raw_symbol.strip().upper()
+            entry = float(row.get(key_entry))
+            sl = float(row.get(key_sl))
             
             if symbol in pending_symbols:
                 continue
