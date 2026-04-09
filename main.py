@@ -1,8 +1,10 @@
 import os
+import time
 import logging
 import threading
 from flask import Flask
 from dotenv import load_dotenv
+from telegram.error import NetworkError
 from telegram.ext import ApplicationBuilder, CommandHandler, MessageHandler, filters
 from bot.handlers import (start_command, trade_command, list_command, cancel_command,
                           history_command, stats_command, pnl_command,
@@ -31,14 +33,12 @@ def run_flask():
     port = int(os.environ.get("PORT", 5000))
     app.run(host='0.0.0.0', port=port)
 
-def main():
-    # Initialize DB
-    init_db()
-    
+def build_and_run():
+    """Build the Telegram application and start polling."""
     token = os.environ.get("TELEGRAM_TOKEN") or os.environ.get("TELEGRAM_BOT_TOKEN")
     if not token:
         log_system("TELEGRAM_TOKEN or TELEGRAM_BOT_TOKEN not found in environment variables", level=logging.ERROR)
-        return
+        raise RuntimeError("Missing Telegram token")
 
     # Build Telegram Bot with extended timeouts to prevent Render crashes
     application = (
@@ -74,8 +74,6 @@ def main():
     # Set up Background Price Checker Job
     job_queue = application.job_queue
     if job_queue:
-        # We'll pass a default chat_id for system alerts if needed, 
-        # or it will be derived from active trades.
         default_chat_id = os.environ.get("TELEGRAM_CHAT_ID")
         job_queue.run_repeating(check_trades, interval=60, first=10, data={'chat_id': default_chat_id})
         
@@ -86,14 +84,37 @@ def main():
     else:
         log_system("JobQueue not initialized. Make sure python-telegram-bot[job-queue] is installed.", level=logging.ERROR)
 
-    # Start Flask Server in Background
+    log_system("TradeBot started successfully.")
+    application.run_polling()
+
+def main():
+    # Initialize DB
+    init_db()
+
+    # Start Flask Server in background (before retry loop so health checks pass on Render)
     flask_thread = threading.Thread(target=run_flask)
     flask_thread.daemon = True
     flask_thread.start()
 
-    # Start Telegram Bot Polling
-    log_system("TradeBot started successfully.")
-    application.run_polling()
+    # Retry loop — handles transient DNS failures on Render cold start
+    max_retries = 10
+    for attempt in range(1, max_retries + 1):
+        try:
+            log_system(f"Starting bot (attempt {attempt}/{max_retries})...")
+            build_and_run()
+            break  # clean exit
+        except NetworkError as e:
+            wait = min(2 ** attempt, 60)  # exponential backoff, capped at 60s
+            log_system(f"NetworkError on startup (attempt {attempt}): {e}. Retrying in {wait}s...", level=logging.WARNING)
+            time.sleep(wait)
+        except RuntimeError:
+            break  # Config error, no point retrying
+        except Exception as e:
+            wait = min(2 ** attempt, 60)
+            log_system(f"Unexpected error on startup (attempt {attempt}): {e}. Retrying in {wait}s...", level=logging.ERROR)
+            time.sleep(wait)
+    else:
+        log_system("Max retries reached. Bot failed to start.", level=logging.ERROR)
 
 if __name__ == '__main__':
     main()
