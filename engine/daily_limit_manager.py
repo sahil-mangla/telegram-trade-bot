@@ -58,7 +58,7 @@ class DailyLimitManager:
         except:
             limit_time = datetime.time(15, 0)
 
-        if datetime.now().time() >= limit_time:
+        if datetime.datetime.now().time() >= limit_time:
             return False, "Market close approaching (no new trades 30 mins before close)."
 
         if DailyLimitManager.is_trading_halted():
