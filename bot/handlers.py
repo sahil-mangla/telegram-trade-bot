@@ -94,7 +94,8 @@ async def handle_document(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 skipped_qty += 1
                 continue
                 
-            trade_id = add_trade(user_id, symbol, entry, sl, None, qty)
+            target = entry + 2 * (entry - sl)
+            trade_id = add_trade(user_id, symbol, entry, sl, target, qty)
             update_trade_fields(trade_id, {
                 'signal_source': 'csv_upload',
                 'allocation_percentage': 10.0
