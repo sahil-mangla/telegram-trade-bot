@@ -55,6 +55,10 @@ async def handle_document(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
 
     settings = get_user_settings(user_id)
+    if not settings or settings.get('account_size', 0) <= 0:
+        await update.message.reply_text("❌ Your account size is $0.\nPlease set your account balance using `/account <amount>` first!\nThe bot needs this to calculate the 10% allocation for your CSV trades.")
+        return
+
     sizer = FixedPercentageSizer(allocation_pct=0.10)
     
     existing_trades = get_user_trades(user_id)
@@ -68,6 +72,9 @@ async def handle_document(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text("❌ Could not map CSV headers correctly.")
         return
 
+    skipped_qty = 0
+    skipped_duplicate = 0
+    
     for row in reader:
         try:
             raw_symbol = row.get(key_symbol)
@@ -79,10 +86,12 @@ async def handle_document(update: Update, context: ContextTypes.DEFAULT_TYPE):
             sl = float(row.get(key_sl))
             
             if symbol in pending_symbols:
+                skipped_duplicate += 1
                 continue
                 
             qty = sizer.calculate_quantity(symbol, entry, sl, settings['account_size'])
             if qty < 1:
+                skipped_qty += 1
                 continue
                 
             trade_id = add_trade(user_id, symbol, entry, sl, None, qty)
@@ -95,11 +104,13 @@ async def handle_document(update: Update, context: ContextTypes.DEFAULT_TYPE):
             errors += 1
             log_system(f"CSV Parse error: {e}", level=30)
 
-    await update.message.reply_text(
-        f"✅ CSV parsing complete!\n"
-        f"📈 Added: {added_count} trades\n"
-        f"❌ Errors: {errors}"
-    )
+    msg = f"✅ CSV parsing complete!\n📈 Added: {added_count} trades\n❌ Errors: {errors}"
+    if skipped_duplicate > 0:
+        msg += f"\n⏭️ Skipped (already active): {skipped_duplicate}"
+    if skipped_qty > 0:
+        msg += f"\n⚠️ Skipped (calculated qty < 1): {skipped_qty}\n(Hint: Increase your /account size or allocation %)"
+        
+    await update.message.reply_text(msg)
 
 async def start_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = update.message.chat_id
