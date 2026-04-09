@@ -73,10 +73,29 @@ async def check_trades(context: ContextTypes.DEFAULT_TYPE):
                 # Zerodha Entry
                 if has_zerodha:
                     tx_type = "BUY" if is_long else "SELL"
-                    zerodha.place_order(symbol, tx_type, qty)
+                    order_id = zerodha.place_order(symbol, tx_type, qty)
+                    if order_id:
+                        log_system(f"Zerodha order placed: #{order_id} ({tx_type} {symbol} x{qty})")
+                    else:
+                        log_system(f"Zerodha order FAILED for {symbol}. Check logs.", level=40)
+                else:
+                    log_system(f"Zerodha not connected — trade {trade_id} ({symbol}) marked ACTIVE but NO real order placed.", level=30)
 
                 update_trade_execution(trade_id, 'ACTIVE', current_price=current_price)
                 log_trade_event(trade_id, "PENDING", "ACTIVE", f"Entry triggered at {current_price}")
+                
+                # Telegram Alert
+                try:
+                    zerodha_note = f"Order #{order_id if has_zerodha else 'N/A (no Zerodha session)'}"
+                    await context.bot.send_message(
+                        chat_id=context.job.data.get('chat_id') if context.job and context.job.data else None,
+                        text=(f"🚀 ENTRY HIT: {symbol}\n"
+                              f"Price: ₹{current_price} | Target: {is_long and 'LONG' or 'SHORT'}\n"
+                              f"Qty: {qty} | SL: {sl}\n"
+                              f"{zerodha_note}")
+                    ) if context.job and context.job.data and context.job.data.get('chat_id') else None
+                except Exception as tg_err:
+                    log_system(f"Telegram alert failed: {tg_err}", level=30)
 
         # --- CASE: ACTIVE ---
         elif status == 'ACTIVE':

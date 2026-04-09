@@ -40,12 +40,27 @@ class ZerodhaService:
     def load_session(self):
         with next(get_session()) as session:
             config = session.query(SystemConfig).filter(SystemConfig.key == 'zerodha_access_token').first()
-            if config:
-                # Check if it was updated today (Kite tokens expire daily)
-                if config.updated_at.date() == datetime.date.today():
-                    self.kite.set_access_token(config.value)
-                    return True
-        return False
+            if not config:
+                log_system("Zerodha: No access token found in DB. Use /login and /settoken to authenticate.", level=30)
+                return False
+            
+            # updated_at is stored as UTC; compare against today in UTC to avoid IST/UTC mismatch
+            ist_offset = datetime.timedelta(hours=5, minutes=30)
+            utc_now = datetime.datetime.utcnow()
+            ist_now = utc_now + ist_offset
+            ist_today = ist_now.date()
+            
+            # Convert stored UTC time to IST for comparison
+            stored_ist = config.updated_at + ist_offset
+            token_date = stored_ist.date()
+            
+            if token_date == ist_today:
+                self.kite.set_access_token(config.value)
+                log_system(f"Zerodha: Session loaded (token set on {token_date}).")
+                return True
+            else:
+                log_system(f"Zerodha: Token is stale (set on {token_date}, today is {ist_today}). Re-login required.", level=30)
+                return False
 
     def place_order(self, symbol: str, transaction_type: str, quantity: int, order_type: str = "MARKET", price: float = None):
         if not self.load_session():
