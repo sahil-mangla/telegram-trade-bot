@@ -39,8 +39,16 @@ def main():
         log_system("TELEGRAM_TOKEN or TELEGRAM_BOT_TOKEN not found in environment variables", level=logging.ERROR)
         return
 
-    # Build Telegram Bot
-    application = ApplicationBuilder().token(token).build()
+    # Build Telegram Bot with extended timeouts to prevent Render crashes
+    application = (
+        ApplicationBuilder()
+        .token(token)
+        .read_timeout(30.0)
+        .write_timeout(30.0)
+        .connect_timeout(30.0)
+        .pool_timeout(30.0)
+        .build()
+    )
 
     # Register Command Handlers
     application.add_handler(CommandHandler("start", start_command))
