@@ -1,7 +1,7 @@
 import os
 import json
 import logging
-from datetime import datetime, time
+from datetime import datetime, time, timedelta
 from telegram.ext import ContextTypes
 from database.operations import get_trades_by_status, update_trade_execution, update_trade_fields
 from services.market_data import get_multiple_prices, LIVE_TICK_DATA
@@ -15,7 +15,7 @@ async def check_trades(context: ContextTypes.DEFAULT_TYPE):
     zerodha = ZerodhaService()
     has_zerodha = zerodha.load_session()
     
-    # 1. Check for Same-Day Closure (EOD)
+    # 1. Check for Same-Day Closure (EOD) — use IST explicitly (server may run in UTC)
     market_close_str = os.environ.get("MARKET_CLOSE_TIME", "15:30")
     try:
         hour, minute = map(int, market_close_str.split(':'))
@@ -23,8 +23,9 @@ async def check_trades(context: ContextTypes.DEFAULT_TYPE):
     except:
         market_close_time = time(15, 30)
 
-    now = datetime.now()
-    current_time = now.time()
+    ist_offset = timedelta(hours=5, minutes=30)
+    ist_now = datetime.utcnow() + ist_offset
+    current_time = ist_now.time()
     
     # Force close 10 mins before market close
     is_eod = False
@@ -80,6 +81,7 @@ async def check_trades(context: ContextTypes.DEFAULT_TYPE):
             if entry_hit:
                 log_system(f"Entry Hit: {symbol} at {current_price}")
                 
+                order_id = None  # default — avoids UnboundLocalError if Zerodha is not connected
                 # Zerodha Entry
                 if has_zerodha:
                     tx_type = "BUY" if is_long else "SELL"
@@ -96,11 +98,11 @@ async def check_trades(context: ContextTypes.DEFAULT_TYPE):
                 
                 # Telegram Alert
                 try:
-                    zerodha_note = f"Order #{order_id if has_zerodha else 'N/A (no Zerodha session)'}"
+                    zerodha_note = f"Order #{order_id}" if order_id else "No Zerodha session — paper trade only"
                     await context.bot.send_message(
                         chat_id=context.job.data.get('chat_id') if context.job and context.job.data else None,
                         text=(f"🚀 ENTRY HIT: {symbol}\n"
-                              f"Price: ₹{current_price} | Target: {is_long and 'LONG' or 'SHORT'}\n"
+                              f"Price: ₹{current_price} | Direction: {'LONG' if is_long else 'SHORT'}\n"
                               f"Qty: {qty} | SL: {sl}\n"
                               f"{zerodha_note}")
                     ) if context.job and context.job.data and context.job.data.get('chat_id') else None
@@ -109,7 +111,7 @@ async def check_trades(context: ContextTypes.DEFAULT_TYPE):
 
         # --- CASE: ACTIVE ---
         elif status == 'ACTIVE':
-            # 1. EOD Check
+            # 1. EOD Check — close at market, record actual P&L direction
             if is_eod:
                 buy_price = trade.get('buy_price') or entry
                 multiplier = 1 if is_long else -1
@@ -119,7 +121,9 @@ async def check_trades(context: ContextTypes.DEFAULT_TYPE):
                     tx_type = "SELL" if is_long else "BUY"
                     zerodha.place_order(symbol, tx_type, qty)
 
-                update_trade_execution(trade_id, 'CLOSED_TARGET', current_price=current_price, pnl=pnl)
+                # Use CLOSED_SL if EOD exit is a loss so SL-hit counter stays accurate
+                eod_status = 'CLOSED_TARGET' if pnl >= 0 else 'CLOSED_SL'
+                update_trade_execution(trade_id, eod_status, current_price=current_price, pnl=pnl)
                 update_trade_fields(trade_id, {'exit_reason': 'EOD_CLOSE'})
                 continue
 
@@ -148,6 +152,7 @@ async def check_trades(context: ContextTypes.DEFAULT_TYPE):
                 update_trade_fields(trade_id, {
                     'stop_loss': new_sl,
                     'highest_price_reached': max(trade.get('highest_price_reached') or 0, current_price),
-                    'trailing_stop_events': json.dumps(ts_manager.events)
+                    'trailing_stop_events': json.dumps(ts_manager.events),
+                    'r_thresholds_crossed': ts_manager.thresholds_crossed_json,
                 })
                 log_system(f"Trailing SL Update ({symbol}): {event_msg}")

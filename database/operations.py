@@ -31,11 +31,15 @@ def update_user_settings(user_id: int, field: str, value):
         session.commit()
 
 def get_daily_metrics(user_id: int):
+    import datetime as _dt
+    ist_offset = _dt.timedelta(hours=5, minutes=30)
+    today = (_dt.datetime.utcnow() + ist_offset).date()
+
     with next(get_session()) as session:
-        today = datetime.date.today()
-        # trades taken today
+        # trades taken today (exclude CANCELLED — they shouldn't count toward the daily limit)
         trades_today = session.query(func.count(Trade.id)).filter(
             Trade.user_id == user_id,
+            Trade.status != 'CANCELLED',
             func.date(Trade.created_at) == today
         ).scalar() or 0
         

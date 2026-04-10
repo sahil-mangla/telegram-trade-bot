@@ -49,8 +49,8 @@ async def handle_document(update: Update, context: ContextTypes.DEFAULT_TYPE):
     added_count = 0
     errors = 0
     
-    # Check daily limits
-    can_trade, reason = DailyLimitManager.can_create_trade()
+    # Check daily limits (skip market hours check for manual CSV uploads)
+    can_trade, reason = DailyLimitManager.can_create_trade(check_market_hours=False)
     if not can_trade:
         await update.message.reply_text(f"🛑 Cannot process CSV: {reason}")
         return
@@ -170,7 +170,8 @@ async def trade_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text("Usage: /trade <symbol> <entry> <stop_loss> [quantity]")
         return
         
-    can_trade, reason = DailyLimitManager.can_create_trade()
+    # Skip market hours check for manual trades — only enforce the daily SL halt
+    can_trade, reason = DailyLimitManager.can_create_trade(check_market_hours=False)
     if not can_trade:
         await update.message.reply_text(f"🛑 {reason}")
         return
