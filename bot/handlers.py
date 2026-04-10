@@ -158,7 +158,10 @@ async def settoken_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     service = ZerodhaService()
     success, msg = service.set_access_token(token)
     if success:
-        await update.message.reply_text(f"✅ {msg}")
+        ticker = ZerodhaTicker()
+        ticker.stop()
+        ticker.start()
+        await update.message.reply_text(f"✅ {msg}\nWebSocket Ticker reconnected.")
     else:
         await update.message.reply_text(f"❌ Error: {msg}")
 
@@ -271,10 +274,41 @@ async def cancel_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not args: return
     try:
         trade_id = int(args[0])
-        update_trade_execution(trade_id, 'CANCELLED')
-        await update.message.reply_text(f"✅ Trade {trade_id} cancelled.")
-    except:
+    except (ValueError, IndexError):
         await update.message.reply_text("Invalid Trade ID.")
+        return
+
+    from database.operations import get_trade_by_id
+    trade = get_trade_by_id(trade_id)
+    if not trade:
+        await update.message.reply_text(f"Trade #{trade_id} not found.")
+        return
+
+    if trade['status'] == 'ACTIVE':
+        # Must close the real position in Zerodha before cancelling in DB
+        zerodha = ZerodhaService()
+        if zerodha.load_session():
+            symbol = trade['symbol']
+            qty = trade['quantity']
+            is_long = trade['target_price'] > trade['entry_price'] if trade['target_price'] else True
+            tx_type = "SELL" if is_long else "BUY"
+            exit_order_id = zerodha.place_order(symbol, tx_type, qty)
+            if not exit_order_id:
+                await update.message.reply_text(
+                    f"🚨 Cannot cancel Trade #{trade_id} — exit order FAILED.\n"
+                    f"Please close {symbol} manually in Zerodha before cancelling here."
+                )
+                return
+            await update.message.reply_text(f"✅ Zerodha exit order placed (#{exit_order_id}). Closing trade.")
+        else:
+            # No Zerodha session — warn but allow cancel (paper trade)
+            await update.message.reply_text(
+                f"⚠️ No Zerodha session. Trade #{trade_id} will be cancelled in bot DB only.\n"
+                f"If this was a real trade, close it manually in Zerodha!"
+            )
+
+    update_trade_execution(trade_id, 'CANCELLED')
+    await update.message.reply_text(f"✅ Trade #{trade_id} cancelled.")
 
 async def history_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     trades = get_user_trade_history(update.message.chat_id, limit=10)

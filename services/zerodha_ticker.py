@@ -33,7 +33,8 @@ class ZerodhaTicker:
                 price = tick.get('last_price')
                 symbol = mgr.get_symbol(token)
                 if symbol and price:
-                    LIVE_TICK_DATA[symbol] = price
+                    import time
+                    LIVE_TICK_DATA[symbol] = (price, time.time())
 
         def on_connect(ws, response):
             log_system("Ticker connected successfully.")
@@ -77,4 +78,5 @@ class ZerodhaTicker:
     def stop(self):
         if self.kws:
             self.kws.close()
+            self.kws = None
             log_system("Ticker stopped.")

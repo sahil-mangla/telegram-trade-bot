@@ -63,9 +63,10 @@ class ZerodhaService:
                 return False
 
     def place_order(self, symbol: str, transaction_type: str, quantity: int, order_type: str = "MARKET", price: float = None):
-        if not self.load_session():
-            log_system("Zerodha session expired or not set.", level=40)
-            return None
+        if not self.kite.access_token:
+            if not self.load_session():
+                log_system("Zerodha session expired or not set.", level=40)
+                return None
             
         try:
             # Note: Zerodha requires exchange info, e.g., "NSE:INFY"

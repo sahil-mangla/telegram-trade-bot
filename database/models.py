@@ -21,6 +21,7 @@ class Trade(Base):
     
     entry_price = Column(Float, nullable=False)
     stop_loss = Column(Float, nullable=False)
+    initial_stop_loss = Column(Float, nullable=True)  # set once at creation, never trailed
     target_price = Column(Float, nullable=False)
     quantity = Column(Integer, default=1)
     

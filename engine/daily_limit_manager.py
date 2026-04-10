@@ -7,11 +7,19 @@ from sqlalchemy import func
 class DailyLimitManager:
     @staticmethod
     def get_sl_hits_today():
+        # Use IST day boundaries (stored timestamps are UTC)
+        ist_offset = datetime.timedelta(hours=5, minutes=30)
+        ist_now = datetime.datetime.utcnow() + ist_offset
+        ist_today = ist_now.date()
+        # IST midnight in UTC
+        day_start_utc = datetime.datetime(ist_today.year, ist_today.month, ist_today.day) - ist_offset
+        day_end_utc = day_start_utc + datetime.timedelta(days=1)
+
         with next(get_session()) as session:
-            today = datetime.date.today()
             hits = session.query(func.count(Trade.id)).filter(
                 Trade.status == 'CLOSED_SL',
-                func.date(Trade.closed_at) == today
+                Trade.closed_at >= day_start_utc,
+                Trade.closed_at < day_end_utc
             ).scalar() or 0
             return hits
 

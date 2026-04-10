@@ -18,7 +18,10 @@ class TrailingStopManager:
     def __init__(self, trade: dict):
         self.trade = trade
         self.entry = trade['entry_price']
-        self.initial_sl = trade['stop_loss']
+        # CRITICAL: use the ORIGINAL stop loss, not the current (possibly trailed) one.
+        # initial_stop_loss is set once at trade creation and never updated.
+        # Falls back to current stop_loss only for trades created before this fix.
+        self.initial_sl = trade.get('initial_stop_loss') or trade['stop_loss']
         self.qty = trade.get('quantity', 1)
         self.is_long = self.entry > self.initial_sl
 

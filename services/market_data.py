@@ -1,8 +1,26 @@
 import yfinance as yf
 
+import time
+
 # Global storage for live ticks from WebSocket
-# Format: { 'SYMBOL': float_price }
+# Format: { 'SYMBOL': (float_price, timestamp_seconds) }
 LIVE_TICK_DATA = {}
+
+def get_live_price(symbol: str):
+    """Helper to get a non-stale live price."""
+    if symbol in LIVE_TICK_DATA:
+        val = LIVE_TICK_DATA[symbol]
+        # In case some old code pushed just a float before reload
+        if isinstance(val, tuple) and len(val) == 2:
+            price, timestamp = val
+            if time.time() - timestamp < 60:
+                return price
+            else:
+                del LIVE_TICK_DATA[symbol]
+        else:
+            # Stale format, clear it
+            del LIVE_TICK_DATA[symbol]
+    return None
 
 def _extract_price(ticker) -> float:
     """Robustly extract current price from a yfinance Ticker object.
@@ -43,8 +61,9 @@ def get_current_price(symbol: str) -> float:
     Prioritizes LIVE_TICK_DATA (WebSocket), then falls back to yfinance.
     """
     # Check live cache first
-    if symbol in LIVE_TICK_DATA:
-        return LIVE_TICK_DATA[symbol]
+    live_price = get_live_price(symbol)
+    if live_price is not None:
+        return live_price
 
     # Always try .NS suffix first (NSE-listed Indian stocks)
     nse_symbol = symbol if symbol.endswith('.NS') else f"{symbol}.NS"

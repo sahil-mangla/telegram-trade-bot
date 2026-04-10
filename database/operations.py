@@ -33,21 +33,27 @@ def update_user_settings(user_id: int, field: str, value):
 def get_daily_metrics(user_id: int):
     import datetime as _dt
     ist_offset = _dt.timedelta(hours=5, minutes=30)
-    today = (_dt.datetime.utcnow() + ist_offset).date()
+    ist_now = _dt.datetime.utcnow() + ist_offset
+    ist_today = ist_now.date()
+    # IST midnight in UTC (timestamps are stored as UTC)
+    day_start_utc = _dt.datetime(ist_today.year, ist_today.month, ist_today.day) - ist_offset
+    day_end_utc = day_start_utc + _dt.timedelta(days=1)
 
     with next(get_session()) as session:
         # trades taken today (exclude CANCELLED — they shouldn't count toward the daily limit)
         trades_today = session.query(func.count(Trade.id)).filter(
             Trade.user_id == user_id,
             Trade.status != 'CANCELLED',
-            func.date(Trade.created_at) == today
+            Trade.created_at >= day_start_utc,
+            Trade.created_at < day_end_utc
         ).scalar() or 0
         
-        # pnl today
+        # pnl today (closed trades)
         pnl_today = session.query(func.sum(Trade.pnl)).filter(
             Trade.user_id == user_id,
             Trade.status.in_(['CLOSED_SL', 'CLOSED_TARGET']),
-            func.date(Trade.closed_at) == today
+            Trade.closed_at >= day_start_utc,
+            Trade.closed_at < day_end_utc
         ).scalar() or 0.0
         
         return {'trades_today': trades_today, 'pnl_today': float(pnl_today)}
@@ -59,6 +65,7 @@ def add_trade(user_id, symbol, entry_price, stop_loss, target_price, quantity):
             symbol=symbol.upper(),
             entry_price=entry_price,
             stop_loss=stop_loss,
+            initial_stop_loss=stop_loss,
             target_price=target_price,
             quantity=quantity,
             status='PENDING'

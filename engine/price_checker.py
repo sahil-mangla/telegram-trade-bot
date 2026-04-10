@@ -4,7 +4,7 @@ import logging
 from datetime import datetime, time, timedelta
 from telegram.ext import ContextTypes
 from database.operations import get_trades_by_status, update_trade_execution, update_trade_fields
-from services.market_data import get_multiple_prices, LIVE_TICK_DATA
+from services.market_data import get_multiple_prices, get_live_price
 from engine.trailing_stop_manager import TrailingStopManager
 from services.zerodha_service import ZerodhaService
 from services.zerodha_ticker import ZerodhaTicker
@@ -55,8 +55,9 @@ async def check_trades(context: ContextTypes.DEFAULT_TYPE):
     
     # Merge with Live Tick Data (Real-time data takes precedence)
     for s in symbols:
-        if s in LIVE_TICK_DATA:
-            prices[s] = LIVE_TICK_DATA[s]
+        live = get_live_price(s)
+        if live is not None:
+            prices[s] = live
             
     # Process trades
     for trade in all_trades:
@@ -81,24 +82,36 @@ async def check_trades(context: ContextTypes.DEFAULT_TYPE):
             if entry_hit:
                 log_system(f"Entry Hit: {symbol} at {current_price}")
                 
-                order_id = None  # default — avoids UnboundLocalError if Zerodha is not connected
-                # Zerodha Entry
+                order_id = None
+                order_ok = True  # True in paper mode; False only if Zerodha order explicitly fails
+
                 if has_zerodha:
                     tx_type = "BUY" if is_long else "SELL"
                     order_id = zerodha.place_order(symbol, tx_type, qty)
                     if order_id:
                         log_system(f"Zerodha order placed: #{order_id} ({tx_type} {symbol} x{qty})")
                     else:
-                        log_system(f"Zerodha order FAILED for {symbol}. Check logs.", level=40)
-                else:
-                    log_system(f"Zerodha not connected — trade {trade_id} ({symbol}) marked ACTIVE but NO real order placed.", level=30)
+                        order_ok = False  # real order failed — do NOT activate
+                        log_system(f"Zerodha order FAILED for {symbol} — trade NOT activated. Check margin/limits.", level=40)
+                        try:
+                            await context.bot.send_message(
+                                chat_id=context.job.data.get('chat_id') if context.job and context.job.data else None,
+                                text=(f"⚠️ ORDER FAILED: {symbol}\n"
+                                      f"Entry at ₹{current_price} could not be placed.\n"
+                                      f"Trade remains PENDING. Check Zerodha margin/limits.")
+                            ) if context.job and context.job.data and context.job.data.get('chat_id') else None
+                        except Exception:
+                            pass
+
+                if not order_ok:
+                    continue  # CRITICAL: do not activate if real order failed
 
                 update_trade_execution(trade_id, 'ACTIVE', current_price=current_price)
                 log_trade_event(trade_id, "PENDING", "ACTIVE", f"Entry triggered at {current_price}")
                 
                 # Telegram Alert
                 try:
-                    zerodha_note = f"Order #{order_id}" if order_id else "No Zerodha session — paper trade only"
+                    zerodha_note = f"Order #{order_id}" if order_id else "Paper trade (no Zerodha session)"
                     await context.bot.send_message(
                         chat_id=context.job.data.get('chat_id') if context.job and context.job.data else None,
                         text=(f"🚀 ENTRY HIT: {symbol}\n"
@@ -137,10 +150,26 @@ async def check_trades(context: ContextTypes.DEFAULT_TYPE):
                 multiplier = 1 if is_long else -1
                 pnl = (current_price - buy_price) * qty * multiplier
                 
+                exit_ok = True
                 if has_zerodha:
                     tx_type = "SELL" if is_long else "BUY"
-                    zerodha.place_order(symbol, tx_type, qty)
-                
+                    exit_order_id = zerodha.place_order(symbol, tx_type, qty)
+                    if not exit_order_id:
+                        exit_ok = False
+                        log_system(f"EXIT ORDER FAILED for {symbol} (trade {trade_id}) — position still open in Zerodha!", level=40)
+                        try:
+                            await context.bot.send_message(
+                                chat_id=context.job.data.get('chat_id') if context.job and context.job.data else None,
+                                text=(f"🚨 EXIT ORDER FAILED: {symbol}\n"
+                                      f"Trade #{trade_id} could not be closed at ₹{current_price}.\n"
+                                      f"MANUAL ACTION REQUIRED in Zerodha!")
+                            ) if context.job and context.job.data and context.job.data.get('chat_id') else None
+                        except Exception:
+                            pass
+
+                if not exit_ok:
+                    continue  # CRITICAL: do not mark closed if Zerodha exit failed
+
                 update_trade_execution(trade_id, new_status, current_price=current_price, pnl=pnl)
                 update_trade_fields(trade_id, {'exit_reason': 'TARGET' if target_hit else 'STOP_LOSS'})
                 continue
