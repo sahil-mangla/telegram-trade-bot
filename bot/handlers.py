@@ -190,9 +190,6 @@ async def trade_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     settings = get_user_settings(user_id)
     metrics = get_daily_metrics(user_id)
     
-    if metrics['trades_today'] >= settings['max_daily_trades']:
-        await update.message.reply_text(f"🛑 Max daily trades limit reached.")
-        return
         
     if len(args) > 3:
         try:

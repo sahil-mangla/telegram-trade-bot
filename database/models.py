@@ -10,7 +10,6 @@ class UserSettings(Base):
     account_size = Column(Float, default=0.0)
     risk_pct = Column(Float, default=1.0)
     max_daily_loss = Column(Float, default=0.0)
-    max_daily_trades = Column(Integer, default=5)
 
 class Trade(Base):
     __tablename__ = "trades"
