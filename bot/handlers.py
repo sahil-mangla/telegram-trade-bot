@@ -82,7 +82,7 @@ async def handle_document(update: Update, context: ContextTypes.DEFAULT_TYPE):
             if not raw_symbol or not raw_symbol.strip():
                 continue
                 
-            symbol = raw_symbol.strip().upper()
+            symbol = raw_symbol.strip().upper().split('.')[0]
             entry = float(row.get(key_entry))
             sl = float(row.get(key_sl))
             
@@ -179,7 +179,7 @@ async def trade_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text(f"🛑 {reason}")
         return
 
-    symbol = args[0].upper()
+    symbol = args[0].upper().split('.')[0]
     try:
         entry = float(args[1])
         sl = float(args[2])
@@ -289,7 +289,7 @@ async def cancel_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
             qty = trade['quantity']
             is_long = trade['target_price'] > trade['entry_price'] if trade['target_price'] else True
             tx_type = "SELL" if is_long else "BUY"
-            exit_order_id = zerodha.place_order(symbol, tx_type, qty)
+            exit_order_id, exit_error = zerodha.place_order(symbol, tx_type, qty)
             if not exit_order_id:
                 await update.message.reply_text(
                     f"🚨 Cannot cancel Trade #{trade_id} — exit order FAILED.\n"

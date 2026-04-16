@@ -87,18 +87,18 @@ async def check_trades(context: ContextTypes.DEFAULT_TYPE):
 
                 if has_zerodha:
                     tx_type = "BUY" if is_long else "SELL"
-                    order_id = zerodha.place_order(symbol, tx_type, qty)
+                    order_id, error_msg = zerodha.place_order(symbol, tx_type, qty)
                     if order_id:
                         log_system(f"Zerodha order placed: #{order_id} ({tx_type} {symbol} x{qty})")
                     else:
                         order_ok = False  # real order failed — do NOT activate
-                        log_system(f"Zerodha order FAILED for {symbol} — trade NOT activated. Check margin/limits.", level=40)
+                        log_system(f"Zerodha order FAILED for {symbol}: {error_msg}", level=40)
                         try:
                             await context.bot.send_message(
                                 chat_id=context.job.data.get('chat_id') if context.job and context.job.data else None,
                                 text=(f"⚠️ ORDER FAILED: {symbol}\n"
-                                      f"Entry at ₹{current_price} could not be placed.\n"
-                                      f"Trade remains PENDING. Check Zerodha margin/limits.")
+                                      f"Error: {error_msg}\n"
+                                      f"Trade remains PENDING.")
                             ) if context.job and context.job.data and context.job.data.get('chat_id') else None
                         except Exception:
                             pass
@@ -153,15 +153,15 @@ async def check_trades(context: ContextTypes.DEFAULT_TYPE):
                 exit_ok = True
                 if has_zerodha:
                     tx_type = "SELL" if is_long else "BUY"
-                    exit_order_id = zerodha.place_order(symbol, tx_type, qty)
+                    exit_order_id, exit_error = zerodha.place_order(symbol, tx_type, qty)
                     if not exit_order_id:
                         exit_ok = False
-                        log_system(f"EXIT ORDER FAILED for {symbol} (trade {trade_id}) — position still open in Zerodha!", level=40)
+                        log_system(f"EXIT ORDER FAILED for {symbol} (trade {trade_id}): {exit_error}", level=40)
                         try:
                             await context.bot.send_message(
                                 chat_id=context.job.data.get('chat_id') if context.job and context.job.data else None,
                                 text=(f"🚨 EXIT ORDER FAILED: {symbol}\n"
-                                      f"Trade #{trade_id} could not be closed at ₹{current_price}.\n"
+                                      f"Error: {exit_error}\n"
                                       f"MANUAL ACTION REQUIRED in Zerodha!")
                             ) if context.job and context.job.data and context.job.data.get('chat_id') else None
                         except Exception:

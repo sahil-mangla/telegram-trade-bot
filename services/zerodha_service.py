@@ -66,22 +66,26 @@ class ZerodhaService:
         if not self.kite.access_token:
             if not self.load_session():
                 log_system("Zerodha session expired or not set.", level=40)
-                return None
+                return None, "Session expired or not configured. Use /login."
             
         try:
+            # Clean symbol (remove .NS, .BO or any suffix)
+            clean_symbol = symbol.split('.')[0].strip().upper()
+            
             # Note: Zerodha requires exchange info, e.g., "NSE:INFY"
             order_id = self.kite.place_order(
                 variety=self.kite.VARIETY_REGULAR,
                 exchange=self.kite.EXCHANGE_NSE,
-                tradingsymbol=symbol,
+                tradingsymbol=clean_symbol,
                 transaction_type=transaction_type, # BUY/SELL
                 quantity=quantity,
                 product=self.kite.PRODUCT_MIS, # Intraday
                 order_type=order_type,
                 price=price
             )
-            log_system(f"Zerodha Order Placed: {order_id} ({transaction_type} {symbol})")
-            return order_id
+            log_system(f"Zerodha Order Placed: {order_id} ({transaction_type} {clean_symbol})")
+            return order_id, None
         except Exception as e:
-            log_system(f"Zerodha Order Error ({symbol}): {e}", level=40)
-            return None
+            error_msg = str(e)
+            log_system(f"Zerodha Order Error ({symbol}): {error_msg}", level=40)
+            return None, error_msg
