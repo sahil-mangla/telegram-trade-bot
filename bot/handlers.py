@@ -346,3 +346,12 @@ async def risk_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     else:
         settings = get_user_settings(user_id)
         await update.message.reply_text(f"⚠️ Risk: {settings['risk_pct']}%")
+
+async def myip_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Checks the public IP address of the server running the bot."""
+    import urllib.request
+    try:
+        ip = urllib.request.urlopen('https://api.ipify.org').read().decode('utf8')
+        await update.message.reply_text(f"🌐 Public IP: `{ip}`\n\nAdd this IP to your Zerodha whitelist at https://developers.kite.trade", parse_mode='Markdown')
+    except Exception as e:
+        await update.message.reply_text(f"❌ Could not retrieve IP: {e}")

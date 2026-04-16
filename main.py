@@ -10,7 +10,7 @@ from bot.handlers import (start_command, trade_command, list_command, cancel_com
                           history_command, stats_command, pnl_command,
                           account_command, risk_command,
                           status_command, activetrades_command, forcesync_command, resetdaily_command,
-                          login_command, settoken_command, handle_document)
+                          login_command, settoken_command, handle_document, myip_command)
 from database.operations import init_db
 from engine.price_checker import check_trades
 from services.zerodha_ticker import ZerodhaTicker
@@ -67,6 +67,7 @@ def build_and_run():
     application.add_handler(CommandHandler("resetdaily", resetdaily_command))
     application.add_handler(CommandHandler("login", login_command))
     application.add_handler(CommandHandler("settoken", settoken_command))
+    application.add_handler(CommandHandler("myip", myip_command))
     
     # Register File Upload Handler (CSV)
     application.add_handler(MessageHandler(filters.Document.ALL, handle_document))
