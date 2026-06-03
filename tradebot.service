@@ -1,0 +1,15 @@
+[Unit]
+Description=Telegram Trade Bot Service
+After=network.target
+
+[Service]
+Type=simple
+User=root
+WorkingDirectory=/root/trade_bot
+ExecStart=/root/trade_bot/venv/bin/python main.py
+Restart=always
+RestartSec=5
+Environment=PYTHONUNBUFFERED=1
+
+[Install]
+WantedBy=multi-user.target

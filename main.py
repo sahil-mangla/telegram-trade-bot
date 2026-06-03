@@ -76,7 +76,7 @@ def build_and_run():
     job_queue = application.job_queue
     if job_queue:
         default_chat_id = os.environ.get("TELEGRAM_CHAT_ID")
-        job_queue.run_repeating(check_trades, interval=60, first=10, data={'chat_id': default_chat_id})
+        job_queue.run_repeating(check_trades, interval=15, first=10, data={'chat_id': default_chat_id})
         
         # Start Zerodha WebSocket Ticker
         ticker = ZerodhaTicker()

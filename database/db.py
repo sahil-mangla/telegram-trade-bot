@@ -17,11 +17,48 @@ SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
 
 Base = declarative_base()
 
+def _run_migrations(engine):
+    from sqlalchemy import text
+    try:
+        with engine.begin() as conn:
+            try:
+                conn.execute(text("ALTER TABLE trades ADD COLUMN entry_order_id TEXT"))
+                log_system("Migration: Added column 'entry_order_id' to trades table.")
+            except Exception as e:
+                err_msg = str(e).lower()
+                if "duplicate" in err_msg or "already exists" in err_msg:
+                    pass
+                else:
+                    log_system(f"Migration warning for entry_order_id: {e}", level=30)
+            
+            try:
+                conn.execute(text("ALTER TABLE trades ADD COLUMN exit_order_id TEXT"))
+                log_system("Migration: Added column 'exit_order_id' to trades table.")
+            except Exception as e:
+                err_msg = str(e).lower()
+                if "duplicate" in err_msg or "already exists" in err_msg:
+                    pass
+                else:
+                    log_system(f"Migration warning for exit_order_id: {e}", level=30)
+
+            try:
+                conn.execute(text("ALTER TABLE trades ADD COLUMN product_type TEXT DEFAULT 'MIS'"))
+                log_system("Migration: Added column 'product_type' to trades table.")
+            except Exception as e:
+                err_msg = str(e).lower()
+                if "duplicate" in err_msg or "already exists" in err_msg:
+                    pass
+                else:
+                    log_system(f"Migration warning for product_type: {e}", level=30)
+    except Exception as e:
+        log_system(f"Migration engine connection error: {e}", level=40)
+
 def init_db():
     log_system(f"Initializing database at {DATABASE_URL}...")
     # Import models here so Base knows about them
     import database.models
     Base.metadata.create_all(bind=engine)
+    _run_migrations(engine)
     log_system("Database initialization complete.")
 
 def get_session():

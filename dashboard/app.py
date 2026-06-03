@@ -31,8 +31,10 @@ trades, summaries = load_data()
 # Sidebar Metrics
 st.sidebar.header("System Status")
 active_count = len(trades[trades['status'] == 'ACTIVE'])
+placed_count = len(trades[trades['status'] == 'ORDER_PLACED'])
 pending_count = len(trades[trades['status'] == 'PENDING'])
 st.sidebar.metric("Active Trades", active_count)
+st.sidebar.metric("Placed Orders", placed_count)
 st.sidebar.metric("Pending Trades", pending_count)
 
 # --- Top Row: Today's Stats ---
@@ -49,15 +51,13 @@ col3.metric("Total PnL", f"${total_pnl:.2f}", delta=f"{total_pnl:.2f}")
 max_r = today_trades['r_multiple_at_exit'].max()
 col4.metric("Highest R Reached", f"{max_r:.1f}R" if not pd.isna(max_r) else "0R")
 
-# --- Middle Row: Active Trades ---
-st.header("🚀 Active Trades")
-active_df = trades[trades['status'] == 'ACTIVE'].copy()
-if not active_df.empty:
-    # Basic Calculation for display
-    # (Price - Entry) / (Entry - SL)
-    st.table(active_df[['id', 'symbol', 'entry_price', 'stop_loss', 'quantity', 'signal_source']])
+# --- Middle Row: Active Trades / Placed Orders ---
+st.header("🚀 Active Trades & Placed Orders")
+active_or_placed_df = trades[trades['status'].isin(['ACTIVE', 'ORDER_PLACED'])].copy()
+if not active_or_placed_df.empty:
+    st.table(active_or_placed_df[['id', 'symbol', 'status', 'product_type', 'entry_price', 'stop_loss', 'quantity', 'signal_source', 'entry_order_id']])
 else:
-    st.info("No active trades at the moment.")
+    st.info("No active trades or placed orders at the moment.")
 
 # --- Bottom Row: Historical Performance ---
 st.header("📊 Performance Analytics")

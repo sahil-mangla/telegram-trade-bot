@@ -25,7 +25,11 @@ class Trade(Base):
     quantity = Column(Integer, default=1)
     
     status = Column(String, default="PENDING", index=True) 
-    # PENDING, ACTIVE, CLOSED_SL, CLOSED_TARGET, CANCELLED
+    # PENDING, ORDER_PLACED, ACTIVE, CLOSED_SL, CLOSED_TARGET, CANCELLED
+    
+    entry_order_id = Column(String, nullable=True)
+    exit_order_id = Column(String, nullable=True)
+    product_type = Column(String(10), default="MIS", nullable=False)
     
     buy_price = Column(Float, nullable=True)
     sell_price = Column(Float, nullable=True)

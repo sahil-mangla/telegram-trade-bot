@@ -58,7 +58,7 @@ def get_daily_metrics(user_id: int):
         
         return {'trades_today': trades_today, 'pnl_today': float(pnl_today)}
 
-def add_trade(user_id, symbol, entry_price, stop_loss, target_price, quantity):
+def add_trade(user_id, symbol, entry_price, stop_loss, target_price, quantity, product_type="MIS"):
     with next(get_session()) as session:
         trade = Trade(
             user_id=user_id,
@@ -68,6 +68,7 @@ def add_trade(user_id, symbol, entry_price, stop_loss, target_price, quantity):
             initial_stop_loss=stop_loss,
             target_price=target_price,
             quantity=quantity,
+            product_type=product_type.upper(),
             status='PENDING'
         )
         session.add(trade)
@@ -89,7 +90,7 @@ def get_trade_by_id(trade_id):
         trade = session.query(Trade).filter(Trade.id == trade_id).first()
         return to_dict(trade)
 
-def update_trade_execution(trade_id, status, current_price=None, pnl=None):
+def update_trade_execution(trade_id, status, current_price=None, pnl=None, order_id=None):
     with next(get_session()) as session:
         trade = session.query(Trade).filter(Trade.id == trade_id).first()
         if not trade: return
@@ -97,14 +98,20 @@ def update_trade_execution(trade_id, status, current_price=None, pnl=None):
         old_status = trade.status
         trade.status = status
         
-        if status == 'ACTIVE' and current_price is not None:
+        if status == 'ORDER_PLACED' and order_id is not None:
+            trade.entry_order_id = order_id
+        elif status == 'ACTIVE' and current_price is not None:
             trade.buy_price = current_price
+            if order_id is not None:
+                trade.entry_order_id = order_id
         elif status in ['CLOSED_SL', 'CLOSED_TARGET'] and current_price is not None:
             trade.sell_price = current_price
             trade.pnl = pnl
             trade.closed_at = datetime.datetime.utcnow()
+            if order_id is not None:
+                trade.exit_order_id = order_id
             
-        log = TradeLog(trade_id=trade_id, old_status=old_status, new_status=status, message=f"Price: {current_price}, PnL: {pnl}")
+        log = TradeLog(trade_id=trade_id, old_status=old_status, new_status=status, message=f"Price: {current_price}, PnL: {pnl}, OrderID: {order_id}")
         session.add(log)
         session.commit()
 

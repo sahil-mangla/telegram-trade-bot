@@ -63,12 +63,13 @@ async def handle_document(update: Update, context: ContextTypes.DEFAULT_TYPE):
     sizer = FixedPercentageSizer(allocation_pct=0.10)
     
     existing_trades = get_user_trades(user_id)
-    pending_symbols = [t['symbol'] for t in existing_trades if t['status'] in ['PENDING', 'ACTIVE']]
+    pending_symbols = [t['symbol'] for t in existing_trades if t['status'] in ['PENDING', 'ORDER_PLACED', 'ACTIVE']]
 
     try:
         key_symbol = next(k for k, v in header_map.items() if v == 'symbol')
         key_entry = next(k for k, v in header_map.items() if v == 'entry')
         key_sl = next(k for k, v in header_map.items() if v == 'sl')
+        key_product = next((k for k, v in header_map.items() if v in ['product', 'product_type', 'type']), None)
     except StopIteration:
         await update.message.reply_text("❌ Could not map CSV headers correctly.")
         return
@@ -96,7 +97,15 @@ async def handle_document(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 continue
                 
             target = entry + 2 * (entry - sl)
-            trade_id = add_trade(user_id, symbol, entry, sl, target, qty)
+            
+            default_product = os.environ.get("DEFAULT_PRODUCT", "MIS").upper()
+            product_type = default_product
+            if key_product and row.get(key_product):
+                prod_val = row.get(key_product).strip().upper()
+                if prod_val in ['CNC', 'NRML', 'MIS']:
+                    product_type = prod_val
+
+            trade_id = add_trade(user_id, symbol, entry, sl, target, qty, product_type=product_type)
             update_trade_fields(trade_id, {
                 'signal_source': 'csv_upload',
                 'allocation_percentage': 10.0
@@ -109,7 +118,7 @@ async def handle_document(update: Update, context: ContextTypes.DEFAULT_TYPE):
     # Auto-subscribe added symbols to WebSocket
     if added_count > 0:
         active_trades = get_user_trades(user_id)
-        symbols = [t['symbol'] for t in active_trades if t['status'] in ['PENDING', 'ACTIVE']]
+        symbols = [t['symbol'] for t in active_trades if t['status'] in ['PENDING', 'ORDER_PLACED', 'ACTIVE']]
         ZerodhaTicker().subscribe_symbols(symbols)
 
     msg = f"✅ CSV parsing complete!\n📈 Added: {added_count} trades\n❌ Errors: {errors}"
@@ -170,7 +179,7 @@ async def trade_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = update.message.chat_id
     
     if len(args) < 3:
-        await update.message.reply_text("Usage: /trade <symbol> <entry> <stop_loss> [quantity]")
+        await update.message.reply_text("Usage: /trade <symbol> <entry> <stop_loss> [quantity] [product]")
         return
         
     # Skip market hours check for manual trades — only enforce the daily SL halt
@@ -190,14 +199,29 @@ async def trade_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     settings = get_user_settings(user_id)
     metrics = get_daily_metrics(user_id)
     
-        
-    if len(args) > 3:
-        try:
-            quantity = int(args[3])
-        except ValueError:
-            await update.message.reply_text("Quantity must be an integer.")
+    quantity = None
+    product_type = os.environ.get("DEFAULT_PRODUCT", "MIS").upper()
+
+    if len(args) >= 4:
+        val3 = args[3].upper()
+        if val3 in ['CNC', 'NRML', 'MIS']:
+            product_type = val3
+        else:
+            try:
+                quantity = int(args[3])
+            except ValueError:
+                await update.message.reply_text("Quantity must be an integer or product type (CNC, NRML, MIS).")
+                return
+
+    if len(args) >= 5:
+        val4 = args[4].upper()
+        if val4 in ['CNC', 'NRML', 'MIS']:
+            product_type = val4
+        else:
+            await update.message.reply_text("Product type must be CNC, NRML, or MIS.")
             return
-    else:
+
+    if quantity is None:
         risk_amount = settings['account_size'] * (settings['risk_pct'] / 100.0)
         risk_per_share = abs(entry - sl)
         if risk_per_share == 0:
@@ -205,11 +229,11 @@ async def trade_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
             return
         quantity = int(risk_amount // risk_per_share)
         if quantity < 1:
-            await update.message.reply_text("Calculated qty < 1.")
+            await update.message.reply_text("Calculated quantity < 1 based on your risk configuration.\n(Hint: Increase your /account size or risk percentage)")
             return
 
     target = entry + 2 * (entry - sl)
-    trade_id = add_trade(user_id, symbol, entry, sl, target, quantity)
+    trade_id = add_trade(user_id, symbol, entry, sl, target, quantity, product_type=product_type)
     update_trade_fields(trade_id, {'signal_source': 'manual'})
     
     # Auto-subscribe to WebSocket
@@ -253,7 +277,7 @@ async def resetdaily_command(update: Update, context: ContextTypes.DEFAULT_TYPE)
 
 async def list_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     trades = get_user_trades(update.message.chat_id)
-    active_or_pending = [t for t in trades if t['status'] in ['PENDING', 'ACTIVE']]
+    active_or_pending = [t for t in trades if t['status'] in ['PENDING', 'ORDER_PLACED', 'ACTIVE']]
     
     if not active_or_pending:
         await update.message.reply_text("No pending or active trades.")
@@ -261,7 +285,8 @@ async def list_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         
     text = "📊 All Trades:\n\n"
     for t in active_or_pending:
-        text += (f"ID: {t['id']} | {t['symbol']} | {t['status']}\n"
+        prod_val = t.get('product_type', 'MIS')
+        text += (f"ID: {t['id']} | {t['symbol']} | {t['status']} | {prod_val}\n"
                  f"Entry: {t['entry_price']} | SL: {t['stop_loss']}\n"
                  f"----------------------\n")
     await update.message.reply_text(text)
@@ -281,7 +306,27 @@ async def cancel_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text(f"Trade #{trade_id} not found.")
         return
 
-    if trade['status'] == 'ACTIVE':
+    if trade['status'] == 'ORDER_PLACED':
+        zerodha = ZerodhaService()
+        if zerodha.load_session():
+            order_id = trade.get('entry_order_id')
+            if order_id:
+                success, error_msg = zerodha.cancel_order(order_id)
+                if not success:
+                    await update.message.reply_text(
+                        f"🚨 Cannot cancel Trade #{trade_id} — Zerodha order cancellation FAILED.\n"
+                        f"Error: {error_msg}\n"
+                        f"Please cancel order #{order_id} manually in Zerodha before cancelling here."
+                    )
+                    return
+                await update.message.reply_text(f"✅ Zerodha entry order #{order_id} cancelled. Closing trade.")
+        else:
+            await update.message.reply_text(
+                f"⚠️ No Zerodha session. Trade #{trade_id} will be cancelled in bot DB only.\n"
+                f"If the order is still live on Zerodha, cancel it manually!"
+            )
+
+    elif trade['status'] == 'ACTIVE':
         # Must close the real position in Zerodha before cancelling in DB
         zerodha = ZerodhaService()
         if zerodha.load_session():
