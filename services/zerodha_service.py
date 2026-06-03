@@ -179,7 +179,7 @@ class ZerodhaService:
                 },
             ]
 
-            gtt_id = self.kite.place_gtt(
+            gtt_id_resp = self.kite.place_gtt(
                 trigger_type=self.kite.GTT_TYPE_OCO,
                 tradingsymbol=clean_symbol,
                 exchange=self.kite.EXCHANGE_NSE,
@@ -187,6 +187,9 @@ class ZerodhaService:
                 last_price=round(last_price, 2),
                 orders=orders,
             )
+            gtt_id = gtt_id_resp
+            if isinstance(gtt_id_resp, dict) and "trigger_id" in gtt_id_resp:
+                gtt_id = gtt_id_resp["trigger_id"]
             log_system(f"Zerodha GTT OCO Placed: #{gtt_id} ({clean_symbol}, SL={sl_price}, Target={target_price}, product={product_type})")
             return gtt_id, None
         except Exception as e:

@@ -13,6 +13,23 @@ from utils.logger import log_trade_event, log_system
 # Product types that support GTT (server-side orders that persist across sessions)
 GTT_SUPPORTED_PRODUCTS = ('CNC', 'NRML')
 
+def parse_gtt_id(gtt_val):
+    if not gtt_val:
+        return None
+    gtt_str = str(gtt_val).strip()
+    if gtt_str.startswith('{'):
+        import ast
+        try:
+            d = ast.literal_eval(gtt_str)
+            if isinstance(d, dict) and 'trigger_id' in d:
+                return int(d['trigger_id'])
+        except Exception as e:
+            log_system(f"Failed to parse gtt_id dictionary: {e}", level=30)
+    try:
+        return int(gtt_str)
+    except ValueError:
+        return None
+
 async def check_trades(context: ContextTypes.DEFAULT_TYPE):
     # Initialize Zerodha Service for execution
     zerodha = ZerodhaService()
@@ -27,10 +44,11 @@ async def check_trades(context: ContextTypes.DEFAULT_TYPE):
 
     def _cancel_trade_gtt(trade):
         """Helper: delete the GTT for a trade (if any) and clear the stored gtt_id."""
-        gtt_id = trade.get('gtt_id')
+        gtt_id_val = trade.get('gtt_id')
+        gtt_id = parse_gtt_id(gtt_id_val)
         product = trade.get('product_type', 'MIS')
         if gtt_id and product in GTT_SUPPORTED_PRODUCTS and has_zerodha:
-            ok, err = zerodha.delete_gtt(int(gtt_id))
+            ok, err = zerodha.delete_gtt(gtt_id)
             if ok:
                 log_system(f"GTT #{gtt_id} deleted for trade {trade['id']} ({trade['symbol']})")
             else:
@@ -226,6 +244,29 @@ async def check_trades(context: ContextTypes.DEFAULT_TYPE):
 
         # --- CASE: ACTIVE ---
         elif status == 'ACTIVE':
+            # Retroactively place GTT OCO if missing for CNC/NRML
+            if not is_eod and product in GTT_SUPPORTED_PRODUCTS and target and not trade.get('gtt_id') and has_zerodha:
+                log_system(f"Retroactively placing GTT OCO for already ACTIVE trade {symbol} (ID: {trade_id})")
+                gtt_id, gtt_err = zerodha.place_gtt_oco(
+                    symbol, qty, sl, target, current_price, product_type=product
+                )
+                if gtt_id:
+                    trade['gtt_id'] = str(gtt_id)
+                    update_trade_fields(trade_id, {'gtt_id': str(gtt_id)})
+                    log_trade_event("GTT_PLACED_RETROACTIVE", trade_id=trade_id, symbol=symbol,
+                                    price=current_price, status="ACTIVE",
+                                    message=f"Retroactive GTT OCO #{gtt_id} placed (SL={sl}, Target={target}).")
+                    await send_telegram_alert(trade.get('user_id'),
+                                              f"🛡️ RETROACTIVE GTT OCO SET: {symbol}\n"
+                                              f"SL: ₹{sl} | Target: ₹{target}\n"
+                                              f"GTT ID: #{gtt_id}")
+                else:
+                    log_system(f"Retroactive GTT placement FAILED for {symbol}: {gtt_err}", level=40)
+                    await send_telegram_alert(trade.get('user_id'),
+                                              f"⚠️ RETROACTIVE GTT PLACEMENT FAILED: {symbol}\n"
+                                              f"Error: {gtt_err}\n"
+                                              f"Bot will monitor via price checker.")
+
             # 1. EOD Check — close at market, record actual P&L direction
             if is_eod:
                 buy_price = trade.get('buy_price') or entry
@@ -298,10 +339,11 @@ async def check_trades(context: ContextTypes.DEFAULT_TYPE):
                 log_system(f"Trailing SL Update ({symbol}): {event_msg}")
 
                 # ----- Modify GTT SL leg for CNC/NRML -----
-                gtt_id = trade.get('gtt_id')
+                gtt_id_val = trade.get('gtt_id')
+                gtt_id = parse_gtt_id(gtt_id_val)
                 if gtt_id and product in GTT_SUPPORTED_PRODUCTS and has_zerodha and target:
                     _, gtt_err = zerodha.modify_gtt_sl(
-                        int(gtt_id), symbol, qty, new_sl, target,
+                        gtt_id, symbol, qty, new_sl, target,
                         current_price, product_type=product
                     )
                     if gtt_err:
