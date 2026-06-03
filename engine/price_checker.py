@@ -194,37 +194,40 @@ async def check_trades(context: ContextTypes.DEFAULT_TYPE):
                     update_trade_execution(trade_id, 'ACTIVE', current_price=exec_price, order_id=order_id)
                     log_trade_event("ENTRY_FILLED", trade_id=trade_id, symbol=symbol, price=exec_price, status="ACTIVE", message=f"Order #{order_id} filled.")
 
-                    # ----- Place GTT OCO sell (CNC/NRML only) -----
-                    if product in GTT_SUPPORTED_PRODUCTS and target:
-                        gtt_id, gtt_err = zerodha.place_gtt_oco(
-                            symbol, qty, sl, target, exec_price, product_type=product
+                    # ----- Place GTT SL sell (CNC/NRML only) -----
+                    if product in GTT_SUPPORTED_PRODUCTS:
+                        gtt_id, gtt_err = zerodha.place_gtt_sl(
+                            symbol, qty, sl, exec_price, product_type=product
                         )
                         if gtt_id:
                             update_trade_fields(trade_id, {'gtt_id': str(gtt_id)})
                             log_trade_event("GTT_PLACED", trade_id=trade_id, symbol=symbol,
                                             price=exec_price, status="ACTIVE",
-                                            message=f"GTT OCO #{gtt_id} placed (SL={sl}, Target={target}).")
+                                            message=f"GTT SL #{gtt_id} placed (SL={sl}).")
+                            target_str = f" | Target: ₹{target}" if target else ""
                             await send_telegram_alert(trade.get('user_id'),
                                                       f"🚀 ENTRY FILLED: {symbol}\n"
                                                       f"Avg Price: ₹{exec_price} | Direction: {'LONG' if is_long else 'SHORT'}\n"
-                                                      f"Qty: {qty} | SL: ₹{sl} | Target: ₹{target}\n"
+                                                      f"Qty: {qty} | SL: ₹{sl}{target_str}\n"
                                                       f"Order #{order_id} filled.\n"
-                                                      f"🛡️ GTT OCO Set: SL=₹{sl} | Target=₹{target} (GTT #{gtt_id})")
+                                                      f"🛡️ GTT SL Set: SL=₹{sl} (GTT #{gtt_id})")
                         else:
-                            log_system(f"GTT OCO placement FAILED for {symbol}: {gtt_err}", level=40)
+                            log_system(f"GTT SL placement FAILED for {symbol}: {gtt_err}", level=40)
+                            target_str = f" | Target: ₹{target}" if target else ""
                             await send_telegram_alert(trade.get('user_id'),
                                                       f"🚀 ENTRY FILLED: {symbol}\n"
                                                       f"Avg Price: ₹{exec_price} | Direction: {'LONG' if is_long else 'SHORT'}\n"
-                                                      f"Qty: {qty} | SL: ₹{sl} | Target: ₹{target}\n"
+                                                      f"Qty: {qty} | SL: ₹{sl}{target_str}\n"
                                                       f"Order #{order_id} filled.\n"
                                                       f"⚠️ GTT PLACEMENT FAILED: {gtt_err}\n"
                                                       f"Bot will monitor via price checker.")
                     else:
-                        # MIS or no target — no GTT, notify normally
+                        # MIS or other product — no GTT, notify normally
+                        target_str = f" | Target: ₹{target}" if target else ""
                         await send_telegram_alert(trade.get('user_id'),
                                                   f"🚀 ENTRY FILLED: {symbol}\n"
                                                   f"Avg Price: ₹{exec_price} | Direction: {'LONG' if is_long else 'SHORT'}\n"
-                                                  f"Qty: {qty} | SL: ₹{sl}\n"
+                                                  f"Qty: {qty} | SL: ₹{sl}{target_str}\n"
                                                   f"Order #{order_id} filled. (MIS — monitoring via price checker)")
 
                 elif order_status in ["CANCELLED", "REJECTED", "FAILED"]:
@@ -244,21 +247,21 @@ async def check_trades(context: ContextTypes.DEFAULT_TYPE):
 
         # --- CASE: ACTIVE ---
         elif status == 'ACTIVE':
-            # Retroactively place GTT OCO if missing for CNC/NRML
-            if not is_eod and product in GTT_SUPPORTED_PRODUCTS and target and not trade.get('gtt_id') and has_zerodha:
-                log_system(f"Retroactively placing GTT OCO for already ACTIVE trade {symbol} (ID: {trade_id})")
-                gtt_id, gtt_err = zerodha.place_gtt_oco(
-                    symbol, qty, sl, target, current_price, product_type=product
+            # Retroactively place GTT SL if missing for CNC/NRML
+            if not is_eod and product in GTT_SUPPORTED_PRODUCTS and not trade.get('gtt_id') and has_zerodha:
+                log_system(f"Retroactively placing GTT SL for already ACTIVE trade {symbol} (ID: {trade_id})")
+                gtt_id, gtt_err = zerodha.place_gtt_sl(
+                    symbol, qty, sl, current_price, product_type=product
                 )
                 if gtt_id:
                     trade['gtt_id'] = str(gtt_id)
                     update_trade_fields(trade_id, {'gtt_id': str(gtt_id)})
                     log_trade_event("GTT_PLACED_RETROACTIVE", trade_id=trade_id, symbol=symbol,
                                     price=current_price, status="ACTIVE",
-                                    message=f"Retroactive GTT OCO #{gtt_id} placed (SL={sl}, Target={target}).")
+                                    message=f"Retroactive GTT SL #{gtt_id} placed (SL={sl}).")
                     await send_telegram_alert(trade.get('user_id'),
-                                              f"🛡️ RETROACTIVE GTT OCO SET: {symbol}\n"
-                                              f"SL: ₹{sl} | Target: ₹{target}\n"
+                                              f"🛡️ RETROACTIVE GTT SL SET: {symbol}\n"
+                                              f"SL: ₹{sl}\n"
                                               f"GTT ID: #{gtt_id}")
                 else:
                     log_system(f"Retroactive GTT placement FAILED for {symbol}: {gtt_err}", level=40)
@@ -299,8 +302,8 @@ async def check_trades(context: ContextTypes.DEFAULT_TYPE):
                 if has_zerodha:
                     # Delete GTT first to avoid double-fill on CNC/NRML
                     _cancel_trade_gtt(trade)
-                    # For MIS, fire an immediate market exit
-                    if product not in GTT_SUPPORTED_PRODUCTS:
+                    # For MIS OR when target is hit on CNC/NRML, fire an immediate market exit
+                    if product not in GTT_SUPPORTED_PRODUCTS or target_hit:
                         tx_type = "SELL" if is_long else "BUY"
                         exit_order_id, exit_error = zerodha.place_order(symbol, tx_type, qty, product_type=product)
                         if not exit_order_id:
@@ -310,8 +313,6 @@ async def check_trades(context: ContextTypes.DEFAULT_TYPE):
                                                       f"🚨 EXIT ORDER FAILED: {symbol}\n"
                                                       f"Error: {exit_error}\n"
                                                       f"MANUAL ACTION REQUIRED in Zerodha!")
-                    # For CNC/NRML the GTT is handling the exit — just close in our DB
-                    # (double-exit guard will be added in the next plan)
 
                 if not exit_ok:
                     continue  # CRITICAL: do not mark closed if Zerodha exit failed
@@ -323,7 +324,7 @@ async def check_trades(context: ContextTypes.DEFAULT_TYPE):
                 await send_telegram_alert(trade.get('user_id'),
                                           f"{reason}: {symbol}\n"
                                           f"Exit Price: ₹{current_price:.2f} | PnL: ₹{pnl:.2f}\n"
-                                          f"{'GTT OCO has executed the sell order on Zerodha.' if product in GTT_SUPPORTED_PRODUCTS else 'Market exit order placed.'}")
+                                          f"{'GTT SL has executed the sell order on Zerodha.' if (product in GTT_SUPPORTED_PRODUCTS and sl_hit) else 'Market exit order placed.'}")
                 continue
 
             # 3. Trailing Stop Update (3R Logic)
@@ -341,9 +342,9 @@ async def check_trades(context: ContextTypes.DEFAULT_TYPE):
                 # ----- Modify GTT SL leg for CNC/NRML -----
                 gtt_id_val = trade.get('gtt_id')
                 gtt_id = parse_gtt_id(gtt_id_val)
-                if gtt_id and product in GTT_SUPPORTED_PRODUCTS and has_zerodha and target:
+                if gtt_id and product in GTT_SUPPORTED_PRODUCTS and has_zerodha:
                     _, gtt_err = zerodha.modify_gtt_sl(
-                        gtt_id, symbol, qty, new_sl, target,
+                        gtt_id, symbol, qty, new_sl,
                         current_price, product_type=product
                     )
                     if gtt_err:

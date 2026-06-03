@@ -147,19 +147,18 @@ class ZerodhaService:
             log_system(f"Zerodha Order Cancel Error ({order_id}): {error_msg}", level=40)
             return False, error_msg
 
-    def place_gtt_oco(self, symbol: str, qty: int, sl_price: float, target_price: float,
-                      last_price: float, product_type: str = "CNC"):
-        """Place a two-leg GTT OCO covering SL and Target for an active LONG position."""
+    def place_gtt_sl(self, symbol: str, qty: int, sl_price: float,
+                     last_price: float, product_type: str = "CNC"):
+        """Place a single-leg GTT SL (stop loss) order for an active LONG position."""
         if not self.kite.access_token:
             if not self.load_session():
                 return None, "Session expired or not configured."
         try:
             clean_symbol = symbol.split('.')[0].strip().upper()
             sl_limit = round(sl_price - 1.0, 2)    # 1 point below trigger for guaranteed fill
-            target_limit = round(target_price, 2)
 
             orders = [
-                {   # Index 0 — SL leg (lower trigger)
+                {
                     "exchange": "NSE",
                     "tradingsymbol": clean_symbol,
                     "transaction_type": "SELL",
@@ -167,30 +166,21 @@ class ZerodhaService:
                     "order_type": "LIMIT",
                     "product": product_type,
                     "price": sl_limit,
-                },
-                {   # Index 1 — Target leg (upper trigger)
-                    "exchange": "NSE",
-                    "tradingsymbol": clean_symbol,
-                    "transaction_type": "SELL",
-                    "quantity": qty,
-                    "order_type": "LIMIT",
-                    "product": product_type,
-                    "price": target_limit,
-                },
+                }
             ]
 
             gtt_id_resp = self.kite.place_gtt(
-                trigger_type=self.kite.GTT_TYPE_OCO,
+                trigger_type=self.kite.GTT_TYPE_SINGLE,
                 tradingsymbol=clean_symbol,
                 exchange=self.kite.EXCHANGE_NSE,
-                trigger_values=[round(sl_price, 2), round(target_price, 2)],
+                trigger_values=[round(sl_price, 2)],
                 last_price=round(last_price, 2),
                 orders=orders,
             )
             gtt_id = gtt_id_resp
             if isinstance(gtt_id_resp, dict) and "trigger_id" in gtt_id_resp:
                 gtt_id = gtt_id_resp["trigger_id"]
-            log_system(f"Zerodha GTT OCO Placed: #{gtt_id} ({clean_symbol}, SL={sl_price}, Target={target_price}, product={product_type})")
+            log_system(f"Zerodha GTT SL Placed: #{gtt_id} ({clean_symbol}, SL={sl_price}, product={product_type})")
             return gtt_id, None
         except Exception as e:
             error_msg = str(e)
@@ -198,15 +188,14 @@ class ZerodhaService:
             return None, error_msg
 
     def modify_gtt_sl(self, gtt_id: int, symbol: str, qty: int, new_sl_price: float,
-                       target_price: float, last_price: float, product_type: str = "CNC"):
-        """Modify the SL leg of an existing GTT OCO when the trailing stop advances."""
+                       last_price: float, product_type: str = "CNC"):
+        """Modify the SL trigger + limit price of an existing single-leg GTT when trailing stop advances."""
         if not self.kite.access_token:
             if not self.load_session():
                 return None, "Session expired or not configured."
         try:
             clean_symbol = symbol.split('.')[0].strip().upper()
             sl_limit = round(new_sl_price - 1.0, 2)
-            target_limit = round(target_price, 2)
 
             orders = [
                 {
@@ -217,28 +206,19 @@ class ZerodhaService:
                     "order_type": "LIMIT",
                     "product": product_type,
                     "price": sl_limit,
-                },
-                {
-                    "exchange": "NSE",
-                    "tradingsymbol": clean_symbol,
-                    "transaction_type": "SELL",
-                    "quantity": qty,
-                    "order_type": "LIMIT",
-                    "product": product_type,
-                    "price": target_limit,
-                },
+                }
             ]
 
             result = self.kite.modify_gtt(
                 trigger_id=int(gtt_id),
-                trigger_type=self.kite.GTT_TYPE_OCO,
+                trigger_type=self.kite.GTT_TYPE_SINGLE,
                 tradingsymbol=clean_symbol,
                 exchange=self.kite.EXCHANGE_NSE,
-                trigger_values=[round(new_sl_price, 2), round(target_price, 2)],
+                trigger_values=[round(new_sl_price, 2)],
                 last_price=round(last_price, 2),
                 orders=orders,
             )
-            log_system(f"Zerodha GTT Modified: #{gtt_id} ({clean_symbol}, new SL={new_sl_price}, Target={target_price})")
+            log_system(f"Zerodha GTT Modified: #{gtt_id} ({clean_symbol}, new SL={new_sl_price})")
             return result, None
         except Exception as e:
             error_msg = str(e)
