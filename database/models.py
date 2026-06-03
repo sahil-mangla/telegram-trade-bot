@@ -30,6 +30,7 @@ class Trade(Base):
     entry_order_id = Column(String, nullable=True)
     exit_order_id = Column(String, nullable=True)
     product_type = Column(String(10), default="MIS", nullable=False)
+    gtt_id = Column(String, nullable=True)   # Zerodha GTT trigger ID for OCO sell orders
     
     buy_price = Column(Float, nullable=True)
     sell_price = Column(Float, nullable=True)

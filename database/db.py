@@ -50,6 +50,16 @@ def _run_migrations(engine):
                     pass
                 else:
                     log_system(f"Migration warning for product_type: {e}", level=30)
+
+            try:
+                conn.execute(text("ALTER TABLE trades ADD COLUMN gtt_id TEXT"))
+                log_system("Migration: Added column 'gtt_id' to trades table.")
+            except Exception as e:
+                err_msg = str(e).lower()
+                if "duplicate" in err_msg or "already exists" in err_msg:
+                    pass
+                else:
+                    log_system(f"Migration warning for gtt_id: {e}", level=30)
     except Exception as e:
         log_system(f"Migration engine connection error: {e}", level=40)
 

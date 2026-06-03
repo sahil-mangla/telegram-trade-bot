@@ -146,3 +146,113 @@ class ZerodhaService:
             error_msg = str(e)
             log_system(f"Zerodha Order Cancel Error ({order_id}): {error_msg}", level=40)
             return False, error_msg
+
+    def place_gtt_oco(self, symbol: str, qty: int, sl_price: float, target_price: float,
+                      last_price: float, product_type: str = "CNC"):
+        """Place a two-leg GTT OCO covering SL and Target for an active LONG position."""
+        if not self.kite.access_token:
+            if not self.load_session():
+                return None, "Session expired or not configured."
+        try:
+            clean_symbol = symbol.split('.')[0].strip().upper()
+            sl_limit = round(sl_price - 1.0, 2)    # 1 point below trigger for guaranteed fill
+            target_limit = round(target_price, 2)
+
+            orders = [
+                {   # Index 0 — SL leg (lower trigger)
+                    "exchange": "NSE",
+                    "tradingsymbol": clean_symbol,
+                    "transaction_type": "SELL",
+                    "quantity": qty,
+                    "order_type": "LIMIT",
+                    "product": product_type,
+                    "price": sl_limit,
+                },
+                {   # Index 1 — Target leg (upper trigger)
+                    "exchange": "NSE",
+                    "tradingsymbol": clean_symbol,
+                    "transaction_type": "SELL",
+                    "quantity": qty,
+                    "order_type": "LIMIT",
+                    "product": product_type,
+                    "price": target_limit,
+                },
+            ]
+
+            gtt_id = self.kite.place_gtt(
+                trigger_type=self.kite.GTT_TYPE_OCO,
+                tradingsymbol=clean_symbol,
+                exchange=self.kite.EXCHANGE_NSE,
+                trigger_values=[round(sl_price, 2), round(target_price, 2)],
+                last_price=round(last_price, 2),
+                orders=orders,
+            )
+            log_system(f"Zerodha GTT OCO Placed: #{gtt_id} ({clean_symbol}, SL={sl_price}, Target={target_price}, product={product_type})")
+            return gtt_id, None
+        except Exception as e:
+            error_msg = str(e)
+            log_system(f"Zerodha GTT Place Error ({symbol}): {error_msg}", level=40)
+            return None, error_msg
+
+    def modify_gtt_sl(self, gtt_id: int, symbol: str, qty: int, new_sl_price: float,
+                       target_price: float, last_price: float, product_type: str = "CNC"):
+        """Modify the SL leg of an existing GTT OCO when the trailing stop advances."""
+        if not self.kite.access_token:
+            if not self.load_session():
+                return None, "Session expired or not configured."
+        try:
+            clean_symbol = symbol.split('.')[0].strip().upper()
+            sl_limit = round(new_sl_price - 1.0, 2)
+            target_limit = round(target_price, 2)
+
+            orders = [
+                {
+                    "exchange": "NSE",
+                    "tradingsymbol": clean_symbol,
+                    "transaction_type": "SELL",
+                    "quantity": qty,
+                    "order_type": "LIMIT",
+                    "product": product_type,
+                    "price": sl_limit,
+                },
+                {
+                    "exchange": "NSE",
+                    "tradingsymbol": clean_symbol,
+                    "transaction_type": "SELL",
+                    "quantity": qty,
+                    "order_type": "LIMIT",
+                    "product": product_type,
+                    "price": target_limit,
+                },
+            ]
+
+            result = self.kite.modify_gtt(
+                trigger_id=int(gtt_id),
+                trigger_type=self.kite.GTT_TYPE_OCO,
+                tradingsymbol=clean_symbol,
+                exchange=self.kite.EXCHANGE_NSE,
+                trigger_values=[round(new_sl_price, 2), round(target_price, 2)],
+                last_price=round(last_price, 2),
+                orders=orders,
+            )
+            log_system(f"Zerodha GTT Modified: #{gtt_id} ({clean_symbol}, new SL={new_sl_price}, Target={target_price})")
+            return result, None
+        except Exception as e:
+            error_msg = str(e)
+            log_system(f"Zerodha GTT Modify Error (#{gtt_id}, {symbol}): {error_msg}", level=40)
+            return None, error_msg
+
+    def delete_gtt(self, gtt_id: int):
+        """Delete a GTT by its ID — used on position close, EOD, or manual cancel."""
+        if not self.kite.access_token:
+            if not self.load_session():
+                return False, "Session expired or not configured."
+        try:
+            self.kite.delete_gtt(trigger_id=int(gtt_id))
+            log_system(f"Zerodha GTT Deleted: #{gtt_id}")
+            return True, None
+        except Exception as e:
+            error_msg = str(e)
+            log_system(f"Zerodha GTT Delete Error (#{gtt_id}): {error_msg}", level=40)
+            return False, error_msg
+
