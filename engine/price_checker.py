@@ -79,6 +79,12 @@ async def check_trades(context: ContextTypes.DEFAULT_TYPE):
     order_placed_trades = get_trades_by_status(['ORDER_PLACED'])
     active_trades = get_trades_by_status(['ACTIVE'])
     
+    # Update active trades cache in ZerodhaTicker for instant WebSocket target hits
+    try:
+        ZerodhaTicker().update_active_trades_cache(active_trades)
+    except Exception as e:
+        log_system(f"Failed to update Ticker active trades cache: {e}", level=30)
+        
     all_trades = pending_trades + order_placed_trades + active_trades
     if not all_trades:
         return
