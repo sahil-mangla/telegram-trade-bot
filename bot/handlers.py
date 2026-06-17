@@ -96,7 +96,7 @@ async def handle_document(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 skipped_qty += 1
                 continue
                 
-            target = entry + 2 * (entry - sl)
+            target = 0.0
             
             default_product = os.environ.get("DEFAULT_PRODUCT", "MIS").upper()
             product_type = default_product
@@ -232,7 +232,7 @@ async def trade_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
             await update.message.reply_text("Calculated quantity < 1 based on your risk configuration.\n(Hint: Increase your /account size or risk percentage)")
             return
 
-    target = entry + 2 * (entry - sl)
+    target = 0.0
     trade_id = add_trade(user_id, symbol, entry, sl, target, quantity, product_type=product_type)
     update_trade_fields(trade_id, {'signal_source': 'manual'})
     
@@ -332,7 +332,7 @@ async def cancel_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         if zerodha.load_session():
             symbol = trade['symbol']
             qty = trade['quantity']
-            is_long = trade['target_price'] > trade['entry_price'] if trade['target_price'] else True
+            is_long = trade['entry_price'] > trade['stop_loss']
             tx_type = "SELL" if is_long else "BUY"
             exit_order_id, exit_error = zerodha.place_order(symbol, tx_type, qty)
             if not exit_order_id:

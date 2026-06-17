@@ -5,8 +5,8 @@ from datetime import datetime
 class TrailingStopManager:
     """
     Manages the trailing stop logic for an active trade.
-    Uses a 3R-based trailing stop: once a trade reaches 3R profit,
-    the SL is locked to entry (break-even). At 4R it locks 1R profit, etc.
+    Uses a 1R-based trailing stop: once a trade reaches 1R profit,
+    the SL is locked to entry (break-even). At 2R it locks 1R profit, etc.
     
     Usage (as in price_checker.py):
         ts_manager = TrailingStopManager(trade)
@@ -85,11 +85,11 @@ class TrailingStopManager:
 
         new_sl = self.trade['stop_loss']   # current SL (may already have been updated)
         new_events = []
-        n = 3
+        n = 1
         while highest_r >= n:
             label = f"{n}R"
             if label not in self.thresholds_crossed:
-                locked_r = n - 3          # 3R→lock 0R (entry), 4R→lock 1R, …
+                locked_r = n - 1          # 1R→lock 0R (entry), 2R→lock 1R, …
                 candidate_sl = self._new_sl_for_locked_r(locked_r)
 
                 # Only move SL in the protective direction (never widen it)

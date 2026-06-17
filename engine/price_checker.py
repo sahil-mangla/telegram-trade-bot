@@ -121,7 +121,7 @@ async def check_trades(context: ContextTypes.DEFAULT_TYPE):
         entry = trade['entry_price']
         sl = trade['stop_loss']
         target = trade['target_price']
-        is_long = target > entry if target else True
+        is_long = entry > sl
         
         # --- CASE: PENDING ---
         if status == 'PENDING':
@@ -333,7 +333,7 @@ async def check_trades(context: ContextTypes.DEFAULT_TYPE):
                                           f"{'GTT SL has executed the sell order on Zerodha.' if (product in GTT_SUPPORTED_PRODUCTS and sl_hit) else 'Market exit order placed.'}")
                 continue
 
-            # 3. Trailing Stop Update (3R Logic)
+            # 3. Trailing Stop Update (1R Logic)
             ts_manager = TrailingStopManager(trade)
             updated, new_sl, event_msg = ts_manager.check_and_update(current_price)
             if updated:

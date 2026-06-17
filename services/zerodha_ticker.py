@@ -91,7 +91,7 @@ class ZerodhaTicker:
             symbol = t['symbol']
             entry = t['entry_price']
             target = t['target_price']
-            is_long = target > entry if target else True
+            is_long = entry > t['stop_loss']
             
             trade_info = {
                 'id': t['id'],
