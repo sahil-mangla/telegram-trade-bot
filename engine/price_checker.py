@@ -30,17 +30,182 @@ def parse_gtt_id(gtt_val):
     except ValueError:
         return None
 
+def get_default_user_id(context=None):
+    if context and hasattr(context, 'data') and isinstance(context.data, dict) and 'chat_id' in context.data:
+        return context.data['chat_id']
+    env_id = os.environ.get("TELEGRAM_CHAT_ID")
+    if env_id:
+        try:
+            return int(env_id)
+        except ValueError:
+            pass
+    # Fallback to first user in UserSettings table
+    try:
+        from database.db import get_session
+        from database.models import UserSettings
+        with next(get_session()) as session:
+            first_user = session.query(UserSettings).first()
+            if first_user:
+                return first_user.user_id
+    except Exception as e:
+        log_system(f"Failed to fetch user from DB in get_default_user_id: {e}", level=30)
+    return 99999999 # fallback default
+
+def sync_zerodha_orders(zerodha: ZerodhaService, user_id: int):
+    """
+    Synchronize manually placed orders from Zerodha with the local database.
+    Imports new completed BUY orders as ACTIVE trades.
+    Closes ACTIVE trades if a completed manual SELL order is detected.
+    """
+    if not zerodha.kite.access_token:
+        return
+    
+    try:
+        orders = zerodha.kite.orders()
+    except Exception as e:
+        log_system(f"Failed to fetch orders from Zerodha for syncing: {e}", level=30)
+        return
+    
+    # 1. Handle completed BUY orders (Imports)
+    buy_orders = [
+        o for o in orders 
+        if o.get('transaction_type') == 'BUY' 
+        and o.get('status') == 'COMPLETE'
+        and o.get('product') in ('CNC', 'NRML', 'MIS')
+    ]
+    
+    sl_pct = float(os.environ.get("MANUAL_TRADE_SL_PCT", "1.5"))
+    target_pct = float(os.environ.get("MANUAL_TRADE_TARGET_PCT", "3.0"))
+    auto_import = os.environ.get("AUTO_IMPORT_MANUAL_TRADES", "True").lower() == "true"
+    
+    if auto_import:
+        for order in buy_orders:
+            order_id = str(order['order_id'])
+            # Check if already imported
+            from database.db import get_session
+            from database.models import Trade
+            with next(get_session()) as session:
+                exists = session.query(Trade).filter(Trade.entry_order_id == order_id).first()
+                if exists:
+                    continue
+            
+            symbol = order['tradingsymbol']
+            qty = int(order['filled_quantity'])
+            entry_price = float(order['average_price'])
+            product_type = order['product']
+            
+            # Entry price > SL for LONG positions
+            stop_loss = round(entry_price * (1 - sl_pct / 100.0), 2)
+            target_price = round(entry_price * (1 + target_pct / 100.0), 2)
+            
+            from database.operations import add_manually_placed_trade
+            trade_id = add_manually_placed_trade(
+                user_id=user_id,
+                symbol=symbol,
+                entry_price=entry_price,
+                stop_loss=stop_loss,
+                target_price=target_price,
+                quantity=qty,
+                product_type=product_type,
+                order_id=order_id
+            )
+            
+            log_system(f"Auto-imported Zerodha buy order: {symbol} (Qty: {qty}, Entry: {entry_price}, SL: {stop_loss}, Trade ID: {trade_id})")
+            
+            # Subscribe symbol to ticker
+            try:
+                ZerodhaTicker().subscribe_symbols([symbol])
+            except Exception as e:
+                log_system(f"Failed to subscribe imported symbol {symbol} to ticker: {e}", level=30)
+                
+    # 2. Handle completed SELL orders (Manual Exits)
+    sell_orders = [
+        o for o in orders 
+        if o.get('transaction_type') == 'SELL' 
+        and o.get('status') == 'COMPLETE'
+        and o.get('product') in ('CNC', 'NRML', 'MIS')
+    ]
+    
+    for order in sell_orders:
+        order_id = str(order['order_id'])
+        symbol = order['tradingsymbol'].upper()
+        sell_price = float(order['average_price'])
+        
+        from database.db import get_session
+        from database.models import Trade
+        with next(get_session()) as session:
+            # Find active trade for this symbol
+            trade = session.query(Trade).filter(
+                Trade.symbol == symbol,
+                Trade.status == 'ACTIVE'
+            ).first()
+            
+            if trade and trade.exit_order_id != order_id:
+                trade_id = trade.id
+                entry = trade.entry_price
+                qty = trade.quantity
+                is_long = entry > trade.stop_loss
+                
+                # Calculate actual PnL
+                multiplier = 1 if is_long else -1
+                pnl = (sell_price - entry) * qty * multiplier
+                
+                # Delete the GTT SL on Zerodha if it exists
+                gtt_id_val = trade.gtt_id
+                gtt_id = parse_gtt_id(gtt_id_val)
+                if gtt_id and trade.product_type in GTT_SUPPORTED_PRODUCTS:
+                    try:
+                        zerodha.delete_gtt(gtt_id)
+                        log_system(f"GTT #{gtt_id} deleted for manually exited trade {trade_id}")
+                    except Exception as ex:
+                        log_system(f"Failed to delete GTT for manual exit: {ex}", level=30)
+                
+                # Close the trade in DB
+                trade.status = 'CLOSED_TARGET' if pnl >= 0 else 'CLOSED_SL'
+                trade.sell_price = sell_price
+                trade.pnl = pnl
+                trade.closed_at = datetime.utcnow()
+                trade.exit_order_id = order_id
+                trade.exit_reason = 'manual_exit'
+                
+                from database.models import TradeLog
+                log = TradeLog(
+                    trade_id=trade_id, 
+                    old_status='ACTIVE', 
+                    new_status=trade.status, 
+                    message=f"Manual exit detected on Zerodha. Order #{order_id} filled at avg price {sell_price}."
+                )
+                session.add(log)
+                session.commit()
+                log_system(f"Closed trade {trade_id} ({symbol}) due to manual Zerodha exit order #{order_id}")
+
 async def check_trades(context: ContextTypes.DEFAULT_TYPE):
     # Initialize Zerodha Service for execution
     zerodha = ZerodhaService()
     has_zerodha = zerodha.load_session()
     
+    # Sync manual orders first if Zerodha is available
+    if has_zerodha:
+        user_id = get_default_user_id(context)
+        sync_zerodha_orders(zerodha, user_id)
+        
+        # Check if WebSocket Ticker needs to be started or refreshed
+        ticker = ZerodhaTicker()
+        current_db_token = zerodha.kite.access_token
+        if not ticker.kws or not getattr(ticker.kws, 'ws', None) or getattr(ticker, 'current_token', None) != current_db_token:
+            log_system("Ticker: Connecting or refreshing WebSocket Ticker connection...")
+            ticker.stop()
+            ticker.start()
+    
     async def send_telegram_alert(chat_id, text):
-        if chat_id:
+        if chat_id and context and hasattr(context, 'bot') and context.bot:
             try:
                 await context.bot.send_message(chat_id=chat_id, text=text)
             except Exception as e:
                 log_system(f"Telegram alert failed: {e}", level=30)
+        else:
+            log_system(f"NOTIFICATION (Telegram Offline): {text}")
+
 
     def _cancel_trade_gtt(trade):
         """Helper: delete the GTT for a trade (if any) and clear the stored gtt_id."""

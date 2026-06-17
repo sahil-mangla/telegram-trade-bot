@@ -155,3 +155,30 @@ def get_user_trade_stats(user_id):
         total_closed = stats['wins'] + stats['losses']
         stats['win_rate'] = (stats['wins'] / total_closed * 100) if total_closed > 0 else 0.0
         return stats
+
+def add_manually_placed_trade(user_id, symbol, entry_price, stop_loss, target_price, quantity, product_type, order_id):
+    with next(get_session()) as session:
+        trade = Trade(
+            user_id=user_id,
+            symbol=symbol.upper(),
+            entry_price=entry_price,
+            stop_loss=stop_loss,
+            initial_stop_loss=stop_loss,
+            target_price=target_price,
+            quantity=quantity,
+            product_type=product_type.upper(),
+            status='ACTIVE',
+            buy_price=entry_price,
+            entry_order_id=str(order_id),
+            signal_source='manual_import',
+            created_at=datetime.datetime.utcnow()
+        )
+        session.add(trade)
+        session.commit()
+        session.refresh(trade)
+        
+        log = TradeLog(trade_id=trade.id, old_status='NONE', new_status='ACTIVE', message=f'Manual Zerodha order #{order_id} imported automatically.')
+        session.add(log)
+        session.commit()
+        return trade.id
+

@@ -26,6 +26,7 @@ class ZerodhaTicker:
 
         api_key = zerodha.api_key
         access_token = zerodha.kite.access_token
+        self.current_token = access_token
 
         self.kws = KiteTicker(api_key, access_token)
 
