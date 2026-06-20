@@ -59,6 +59,15 @@ def get_daily_metrics(user_id: int):
         return {'trades_today': trades_today, 'pnl_today': float(pnl_today)}
 
 def add_trade(user_id, symbol, entry_price, stop_loss, target_price, quantity, product_type="MIS"):
+    from utils.indicators import fetch_historical_candles, calculate_indicators
+    candles = fetch_historical_candles(symbol)
+    indicators = calculate_indicators(candles)
+    
+    atr_val = indicators['atr'] if indicators else None
+    y_close = indicators['yesterday_close'] if indicators else None
+    avg_price = indicators['average_price_20d'] if indicators else None
+    avg_vol = indicators['average_volume_20d'] if indicators else None
+
     with next(get_session()) as session:
         trade = Trade(
             user_id=user_id,
@@ -69,7 +78,11 @@ def add_trade(user_id, symbol, entry_price, stop_loss, target_price, quantity, p
             target_price=target_price,
             quantity=quantity,
             product_type=product_type.upper(),
-            status='PENDING'
+            status='PENDING',
+            atr=atr_val,
+            yesterday_close=y_close,
+            average_price_20d=avg_price,
+            average_volume_20d=avg_vol
         )
         session.add(trade)
         session.commit()
@@ -157,6 +170,15 @@ def get_user_trade_stats(user_id):
         return stats
 
 def add_manually_placed_trade(user_id, symbol, entry_price, stop_loss, target_price, quantity, product_type, order_id):
+    from utils.indicators import fetch_historical_candles, calculate_indicators
+    candles = fetch_historical_candles(symbol)
+    indicators = calculate_indicators(candles)
+    
+    atr_val = indicators['atr'] if indicators else None
+    y_close = indicators['yesterday_close'] if indicators else None
+    avg_price = indicators['average_price_20d'] if indicators else None
+    avg_vol = indicators['average_volume_20d'] if indicators else None
+
     with next(get_session()) as session:
         trade = Trade(
             user_id=user_id,
@@ -171,6 +193,10 @@ def add_manually_placed_trade(user_id, symbol, entry_price, stop_loss, target_pr
             buy_price=entry_price,
             entry_order_id=str(order_id),
             signal_source='manual_import',
+            atr=atr_val,
+            yesterday_close=y_close,
+            average_price_20d=avg_price,
+            average_volume_20d=avg_vol,
             created_at=datetime.datetime.utcnow()
         )
         session.add(trade)

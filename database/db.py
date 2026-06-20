@@ -60,6 +60,18 @@ def _run_migrations(engine):
                     pass
                 else:
                     log_system(f"Migration warning for gtt_id: {e}", level=30)
+
+            # Add ATR and blow-off indicator columns
+            for col_name in ('atr', 'yesterday_close', 'average_price_20d', 'average_volume_20d'):
+                try:
+                    conn.execute(text(f"ALTER TABLE trades ADD COLUMN {col_name} REAL"))
+                    log_system(f"Migration: Added column '{col_name}' to trades table.")
+                except Exception as e:
+                    err_msg = str(e).lower()
+                    if "duplicate" in err_msg or "already exists" in err_msg:
+                        pass
+                    else:
+                        log_system(f"Migration warning for {col_name}: {e}", level=30)
     except Exception as e:
         log_system(f"Migration engine connection error: {e}", level=40)
 

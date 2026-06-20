@@ -49,6 +49,12 @@ class Trade(Base):
     allocation_percentage = Column(Float, nullable=True)
     r_thresholds_crossed = Column(String, nullable=True) # JSON string
     
+    # ATR and Blow-Off indicators
+    atr = Column(Float, nullable=True)
+    yesterday_close = Column(Float, nullable=True)
+    average_price_20d = Column(Float, nullable=True)
+    average_volume_20d = Column(Float, nullable=True)
+    
     created_at = Column(DateTime, default=datetime.datetime.utcnow)
     closed_at = Column(DateTime, nullable=True)
 
